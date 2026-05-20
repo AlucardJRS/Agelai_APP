@@ -1,0 +1,1482 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * Main application router and controller for API + dashboard.
+ */
+final class App
+{
+    public function __construct(
+        private readonly \PDO $pdo,
+        private readonly array $config
+    ) {
+    }
+
+    public function handle(): void
+    {
+        Security::addSecurityHeaders();
+
+        $this->applyRateLimit();
+
+        $requestUri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
+        $path = rawurldecode((string) (parse_url($requestUri, PHP_URL_PATH) ?? '/'));
+        $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+        if ($path === '/assets/styles.css') {
+            $this->serveStylesheet();
+            return;
+        }
+
+        if (str_starts_with($path, '/api/')) {
+            $this->handleApiRequest($method, $path);
+            return;
+        }
+
+        $this->handleDashboardRequest($method, $path);
+    }
+
+    /**
+     * Baseline fixed-window rate limiter persisted in DB to resist brute-force abuse.
+     */
+    private function applyRateLimit(): void
+    {
+        $requestUri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
+        $path = (string) (parse_url($requestUri, PHP_URL_PATH) ?? '/');
+        $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        $key = $ip . '|' . $method . '|' . $path;
+
+        $limit = 120;
+        $windowSeconds = 60;
+
+        // Lower thresholds for authentication and reservation confirmation endpoints.
+        if (
+            ($path === '/api/auth/google-login' && $method === 'POST')
+            || ($path === '/dashboard/login' && $method === 'POST')
+            || str_starts_with($path, '/api/reservations/')
+        ) {
+            $limit = 20;
+        }
+
+        $now = time();
+        $statement = $this->pdo->prepare(
+            'SELECT key_name, window_started_at, hit_count FROM rate_limits WHERE key_name = :key_name LIMIT 1'
+        );
+        $statement->execute([':key_name' => $key]);
+        $row = $statement->fetch();
+
+        if ($row === false) {
+            $insert = $this->pdo->prepare(
+                'INSERT INTO rate_limits (key_name, window_started_at, hit_count) VALUES (:key_name, :window_started_at, :hit_count)'
+            );
+            $insert->execute([
+                ':key_name' => $key,
+                ':window_started_at' => $now,
+                ':hit_count' => 1,
+            ]);
+            return;
+        }
+
+        $windowStartedAt = (int) $row['window_started_at'];
+        $hitCount = (int) $row['hit_count'];
+
+        if (($now - $windowStartedAt) > $windowSeconds) {
+            $reset = $this->pdo->prepare(
+                'UPDATE rate_limits SET window_started_at = :window_started_at, hit_count = :hit_count WHERE key_name = :key_name'
+            );
+            $reset->execute([
+                ':window_started_at' => $now,
+                ':hit_count' => 1,
+                ':key_name' => $key,
+            ]);
+            return;
+        }
+
+        if ($hitCount >= $limit) {
+            http_response_code(429);
+            if (str_starts_with($path, '/api/')) {
+                $this->json([
+                    'ok' => false,
+                    'message' => 'Demasiadas solicitudes. Intenta de nuevo en un minuto.',
+                ], 429);
+            } else {
+                echo 'Demasiadas solicitudes. Intenta de nuevo en un minuto.';
+            }
+            exit;
+        }
+
+        $increment = $this->pdo->prepare(
+            'UPDATE rate_limits SET hit_count = :hit_count WHERE key_name = :key_name'
+        );
+        $increment->execute([
+            ':hit_count' => $hitCount + 1,
+            ':key_name' => $key,
+        ]);
+    }
+
+    private function serveStylesheet(): void
+    {
+        $cssFile = __DIR__ . '/../public/assets/styles.css';
+        if (!is_file($cssFile)) {
+            http_response_code(404);
+            echo 'CSS no encontrado';
+            return;
+        }
+
+        header('Content-Type: text/css; charset=utf-8');
+        readfile($cssFile);
+    }
+
+    private function handleApiRequest(string $method, string $path): void
+    {
+        if ($method === 'POST' && $path === '/api/auth/google-login') {
+            $this->apiGoogleLogin();
+            return;
+        }
+
+        $user = $this->authenticatedApiUser();
+        if ($user === null) {
+            $this->json(['ok' => false, 'message' => 'No autorizado'], 401);
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/api/me') {
+            $this->apiMe($user);
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/api/activities') {
+            $this->apiActivities($user);
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/api/reservations') {
+            $this->apiReservations($user);
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/api/announcements') {
+            $this->apiAnnouncements($user);
+            return;
+        }
+
+        if ($method === 'POST' && preg_match('#^/api/activities/(\d+)/reserve$#', $path, $matches) === 1) {
+            $this->apiReserveActivity($user, (int) $matches[1]);
+            return;
+        }
+
+        if ($method === 'POST' && preg_match('#^/api/reservations/(\d+)/confirm$#', $path, $matches) === 1) {
+            $this->apiConfirmReservation($user, (int) $matches[1]);
+            return;
+        }
+
+        if ($method === 'POST' && preg_match('#^/api/reservations/(\d+)/cancel$#', $path, $matches) === 1) {
+            $this->apiCancelReservation($user, (int) $matches[1]);
+            return;
+        }
+
+        $this->json(['ok' => false, 'message' => 'Ruta API no encontrada'], 404);
+    }
+
+    private function handleDashboardRequest(string $method, string $path): void
+    {
+        if ($path === '/') {
+            header('Location: /dashboard');
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/login') {
+            $this->render('login', ['title' => 'Login Admin']);
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/login') {
+            $this->dashboardLogin();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/logout') {
+            $this->dashboardLogout();
+            return;
+        }
+
+        if (!$this->isAdminAuthenticated()) {
+            header('Location: /dashboard/login');
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard') {
+            $this->dashboardHome();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/users') {
+            $this->dashboardUsers();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/users/update') {
+            $this->dashboardUsersUpdate();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/activities') {
+            $this->dashboardActivities();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/activities/create') {
+            $this->dashboardActivitiesCreate();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/activities/toggle') {
+            $this->dashboardActivitiesToggle();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/reservations') {
+            $this->dashboardReservations();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/reservations/approve') {
+            $this->dashboardReservationApprove();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/reservations/reject') {
+            $this->dashboardReservationReject();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/announcements') {
+            $this->dashboardAnnouncements();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/announcements/create') {
+            $this->dashboardAnnouncementCreate();
+            return;
+        }
+
+        http_response_code(404);
+        echo 'Ruta dashboard no encontrada';
+    }
+
+    private function dashboardLogin(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/login');
+            return;
+        }
+
+        $username = trim((string) ($_POST['username'] ?? ''));
+        $password = (string) ($_POST['password'] ?? '');
+
+        if ($username === '' || $password === '') {
+            $this->setFlash('error', 'Usuario y password son obligatorios.');
+            header('Location: /dashboard/login');
+            return;
+        }
+
+        $query = $this->pdo->prepare('SELECT id, username, password_hash FROM admins WHERE username = :username LIMIT 1');
+        $query->execute([':username' => $username]);
+        $admin = $query->fetch();
+
+        if ($admin === false || !password_verify($password, (string) $admin['password_hash'])) {
+            $this->setFlash('error', 'Credenciales invalidas.');
+            header('Location: /dashboard/login');
+            return;
+        }
+
+        session_regenerate_id(true);
+        $_SESSION['admin_id'] = (int) $admin['id'];
+        $_SESSION['admin_username'] = (string) $admin['username'];
+
+        $this->setFlash('success', 'Sesion iniciada correctamente.');
+        header('Location: /dashboard');
+    }
+
+    private function dashboardLogout(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard');
+            return;
+        }
+
+        $_SESSION = [];
+        if (ini_get('session.use_cookies')) {
+            $params = session_get_cookie_params();
+            setcookie(session_name(), '', time() - 3600, $params['path'], $params['domain'], (bool) $params['secure'], (bool) $params['httponly']);
+        }
+        session_destroy();
+
+        header('Location: /dashboard/login');
+    }
+
+    private function dashboardHome(): void
+    {
+        $stats = [
+            'users_total' => $this->count('SELECT COUNT(*) FROM users'),
+            'users_pending' => $this->count("SELECT COUNT(*) FROM users WHERE status = 'pending'"),
+            'activities_active' => $this->count("SELECT COUNT(*) FROM activities WHERE status = 'active'"),
+            'reservations_confirmed' => $this->count("SELECT COUNT(*) FROM reservations WHERE status = 'confirmed'"),
+            'reservations_waitlist' => $this->count("SELECT COUNT(*) FROM reservations WHERE status = 'waitlist'"),
+            'reservations_pending_admin' => $this->count("SELECT COUNT(*) FROM reservations WHERE status = 'pending_admin_approval'"),
+        ];
+
+        $this->render('dashboard', [
+            'title' => 'Dashboard',
+            'stats' => $stats,
+        ]);
+    }
+
+    private function dashboardUsers(): void
+    {
+        $moduleRows = $this->pdo->query('SELECT id, code, name FROM modules ORDER BY name ASC')->fetchAll();
+        $usersRaw = $this->pdo->query('SELECT id, full_name, email, google_id, status, created_at FROM users ORDER BY created_at DESC')->fetchAll();
+
+        $moduleStmt = $this->pdo->prepare(
+            'SELECT m.id, m.code, m.name
+             FROM user_modules um
+             INNER JOIN modules m ON m.id = um.module_id
+             WHERE um.user_id = :user_id
+             ORDER BY m.name ASC'
+        );
+
+        $users = [];
+        foreach ($usersRaw as $userRow) {
+            $moduleStmt->execute([':user_id' => (int) $userRow['id']]);
+            $userModules = $moduleStmt->fetchAll();
+            $userRow['modules'] = $userModules;
+            $users[] = $userRow;
+        }
+
+        $this->render('users', [
+            'title' => 'Usuarios y Permisos',
+            'users' => $users,
+            'modules' => $moduleRows,
+        ]);
+    }
+
+    private function dashboardUsersUpdate(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $userId = (int) ($_POST['user_id'] ?? 0);
+        $status = (string) ($_POST['status'] ?? 'pending');
+        $moduleIdsRaw = $_POST['module_ids'] ?? [];
+        $allowedStatus = ['pending', 'active', 'blocked'];
+
+        if ($userId <= 0 || !in_array($status, $allowedStatus, true)) {
+            $this->setFlash('error', 'Datos de usuario invalidos.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $moduleIds = [];
+        if (is_array($moduleIdsRaw)) {
+            foreach ($moduleIdsRaw as $moduleIdRaw) {
+                $moduleId = (int) $moduleIdRaw;
+                if ($moduleId > 0) {
+                    $moduleIds[] = $moduleId;
+                }
+            }
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            if ($status === 'active' && count($moduleIds) === 0) {
+                // Active users without modules would violate the business rule.
+                $status = 'pending';
+            }
+
+            $updateUser = $this->pdo->prepare('UPDATE users SET status = :status WHERE id = :id');
+            $updateUser->execute([
+                ':status' => $status,
+                ':id' => $userId,
+            ]);
+
+            $deleteModules = $this->pdo->prepare('DELETE FROM user_modules WHERE user_id = :user_id');
+            $deleteModules->execute([':user_id' => $userId]);
+
+            if (count($moduleIds) > 0) {
+                $insertModule = $this->pdo->prepare(
+                    'INSERT IGNORE INTO user_modules (user_id, module_id) VALUES (:user_id, :module_id)'
+                );
+                foreach ($moduleIds as $moduleId) {
+                    $insertModule->execute([
+                        ':user_id' => $userId,
+                        ':module_id' => $moduleId,
+                    ]);
+                }
+            }
+
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->setFlash('error', 'No se pudo actualizar el usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->setFlash('success', 'Usuario actualizado correctamente.');
+        header('Location: /dashboard/users');
+    }
+
+    private function dashboardActivities(): void
+    {
+        $moduleRows = $this->pdo->query('SELECT code, name FROM modules ORDER BY name ASC')->fetchAll();
+
+        $activities = $this->pdo->query(
+            'SELECT a.*,
+               (
+                 SELECT COUNT(*)
+                 FROM reservations r
+                 WHERE r.activity_id = a.id
+                 AND r.status IN (\'pending_user_confirm\', \'pending_admin_approval\', \'confirmed\')
+               ) AS occupied_slots
+             FROM activities a
+             ORDER BY a.starts_at ASC'
+        )->fetchAll();
+
+        $this->render('activities', [
+            'title' => 'Actividades',
+            'modules' => $moduleRows,
+            'activities' => $activities,
+        ]);
+    }
+
+    private function dashboardActivitiesCreate(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $title = trim((string) ($_POST['title'] ?? ''));
+        $moduleCode = Security::normalizeModuleCode($_POST['module_code'] ?? null, (array) $this->config['allowed_modules']);
+        $startsAt = trim((string) ($_POST['starts_at'] ?? ''));
+        $endsAt = trim((string) ($_POST['ends_at'] ?? ''));
+        $capacity = (int) ($_POST['capacity'] ?? 0);
+        $location = trim((string) ($_POST['location'] ?? ''));
+        $notes = trim((string) ($_POST['notes'] ?? ''));
+
+        if ($title === '' || mb_strlen($title) > 120 || $moduleCode === null) {
+            $this->setFlash('error', 'Datos principales invalidos.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        if ($capacity < 1 || $capacity > 500) {
+            $this->setFlash('error', 'El cupo debe estar entre 1 y 500.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $startDate = date_create_immutable($startsAt);
+        $endDate = date_create_immutable($endsAt);
+        if ($startDate === false || $endDate === false || $endDate <= $startDate) {
+            $this->setFlash('error', 'Fechas/horas invalidas.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        if ($location === '' || mb_strlen($location) > 120) {
+            $this->setFlash('error', 'Ubicacion invalida.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $insert = $this->pdo->prepare(
+            'INSERT INTO activities (title, module_code, starts_at, ends_at, capacity, location, notes, status, created_at)
+             VALUES (:title, :module_code, :starts_at, :ends_at, :capacity, :location, :notes, :status, :created_at)'
+        );
+        $insert->execute([
+            ':title' => $title,
+            ':module_code' => $moduleCode,
+            ':starts_at' => $startDate->format('c'),
+            ':ends_at' => $endDate->format('c'),
+            ':capacity' => $capacity,
+            ':location' => $location,
+            ':notes' => $notes,
+            ':status' => 'active',
+            ':created_at' => gmdate('c'),
+        ]);
+
+        $this->setFlash('success', 'Actividad creada correctamente.');
+        header('Location: /dashboard/activities');
+    }
+
+    private function dashboardActivitiesToggle(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $activityId = (int) ($_POST['activity_id'] ?? 0);
+        $status = (string) ($_POST['status'] ?? '');
+
+        if ($activityId <= 0 || !in_array($status, ['active', 'inactive'], true)) {
+            $this->setFlash('error', 'Datos de estado invalidos.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $update = $this->pdo->prepare('UPDATE activities SET status = :status WHERE id = :id');
+        $update->execute([
+            ':status' => $status,
+            ':id' => $activityId,
+        ]);
+
+        $this->setFlash('success', 'Estado de actividad actualizado.');
+        header('Location: /dashboard/activities');
+    }
+
+    private function dashboardReservations(): void
+    {
+        $reservations = $this->pdo->query(
+            'SELECT r.id, r.status, r.payment_status, r.created_at, r.updated_at,
+                    u.full_name, u.email,
+                    a.title, a.module_code, a.starts_at, a.ends_at, a.capacity,
+                    (
+                       SELECT COUNT(*)
+                       FROM reservations rx
+                       WHERE rx.activity_id = a.id
+                       AND rx.status IN (\'pending_user_confirm\', \'pending_admin_approval\', \'confirmed\')
+                    ) AS occupied_slots
+             FROM reservations r
+             INNER JOIN users u ON u.id = r.user_id
+             INNER JOIN activities a ON a.id = r.activity_id
+             ORDER BY r.created_at DESC'
+        )->fetchAll();
+
+        $this->render('reservations', [
+            'title' => 'Reservas',
+            'reservations' => $reservations,
+        ]);
+    }
+
+    private function dashboardReservationApprove(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/reservations');
+            return;
+        }
+
+        $reservationId = (int) ($_POST['reservation_id'] ?? 0);
+        if ($reservationId <= 0) {
+            $this->setFlash('error', 'Reserva invalida.');
+            header('Location: /dashboard/reservations');
+            return;
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $query = $this->pdo->prepare(
+                'SELECT r.id, r.status
+                 FROM reservations r
+                 WHERE r.id = :id
+                 LIMIT 1'
+            );
+            $query->execute([':id' => $reservationId]);
+            $reservation = $query->fetch();
+
+            if ($reservation === false || (string) $reservation['status'] !== 'pending_admin_approval') {
+                throw new \RuntimeException('Estado no aprobable.');
+            }
+
+            $update = $this->pdo->prepare(
+                'UPDATE reservations
+                 SET status = :status, payment_status = :payment_status, updated_at = :updated_at
+                 WHERE id = :id'
+            );
+            $update->execute([
+                ':status' => 'confirmed',
+                ':payment_status' => 'paid_mock',
+                ':updated_at' => gmdate('c'),
+                ':id' => $reservationId,
+            ]);
+
+            $this->pdo->commit();
+            $this->setFlash('success', 'Reserva aprobada y confirmada.');
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->setFlash('error', 'No se pudo aprobar la reserva.');
+        }
+
+        header('Location: /dashboard/reservations');
+    }
+
+    private function dashboardReservationReject(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/reservations');
+            return;
+        }
+
+        $reservationId = (int) ($_POST['reservation_id'] ?? 0);
+        if ($reservationId <= 0) {
+            $this->setFlash('error', 'Reserva invalida.');
+            header('Location: /dashboard/reservations');
+            return;
+        }
+
+        $update = $this->pdo->prepare(
+            'UPDATE reservations
+             SET status = :status, updated_at = :updated_at
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':status' => 'cancelled',
+            ':updated_at' => gmdate('c'),
+            ':id' => $reservationId,
+        ]);
+
+        $this->setFlash('success', 'Reserva rechazada.');
+        header('Location: /dashboard/reservations');
+    }
+
+    private function dashboardAnnouncements(): void
+    {
+        $announcements = $this->pdo->query(
+            'SELECT id, module_code, title, body, starts_at, ends_at, is_active, created_at
+             FROM announcements
+             ORDER BY created_at DESC'
+        )->fetchAll();
+
+        $this->render('announcements', [
+            'title' => 'Anuncios',
+            'announcements' => $announcements,
+            'modules' => (array) $this->config['allowed_modules'],
+        ]);
+    }
+
+    private function dashboardAnnouncementCreate(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/announcements');
+            return;
+        }
+
+        $moduleCodeRaw = trim((string) ($_POST['module_code'] ?? ''));
+        $moduleCode = $moduleCodeRaw === '' ? null : Security::normalizeModuleCode($moduleCodeRaw, (array) $this->config['allowed_modules']);
+        $title = trim((string) ($_POST['title'] ?? ''));
+        $body = trim((string) ($_POST['body'] ?? ''));
+        $startsAt = trim((string) ($_POST['starts_at'] ?? ''));
+        $endsAt = trim((string) ($_POST['ends_at'] ?? ''));
+
+        $startDate = date_create_immutable($startsAt);
+        $endDate = date_create_immutable($endsAt);
+        if ($moduleCodeRaw !== '' && $moduleCode === null) {
+            $this->setFlash('error', 'Modulo invalido.');
+            header('Location: /dashboard/announcements');
+            return;
+        }
+        if ($title === '' || mb_strlen($title) > 120 || $body === '' || mb_strlen($body) > 3000) {
+            $this->setFlash('error', 'Titulo o cuerpo invalidos.');
+            header('Location: /dashboard/announcements');
+            return;
+        }
+        if ($startDate === false || $endDate === false || $endDate <= $startDate) {
+            $this->setFlash('error', 'Fechas invalidas.');
+            header('Location: /dashboard/announcements');
+            return;
+        }
+
+        $insert = $this->pdo->prepare(
+            'INSERT INTO announcements (module_code, title, body, starts_at, ends_at, is_active, created_at)
+             VALUES (:module_code, :title, :body, :starts_at, :ends_at, :is_active, :created_at)'
+        );
+        $insert->execute([
+            ':module_code' => $moduleCode,
+            ':title' => $title,
+            ':body' => $body,
+            ':starts_at' => $startDate->format('c'),
+            ':ends_at' => $endDate->format('c'),
+            ':is_active' => 1,
+            ':created_at' => gmdate('c'),
+        ]);
+
+        $this->setFlash('success', 'Anuncio creado correctamente.');
+        header('Location: /dashboard/announcements');
+    }
+
+    /**
+     * Handles pseudo Google login for local testing.
+     */
+    private function apiGoogleLogin(): void
+    {
+        $payload = Security::jsonBody();
+        $googleId = trim((string) ($payload['google_id'] ?? ''));
+        $email = trim((string) ($payload['email'] ?? ''));
+        $fullName = trim((string) ($payload['full_name'] ?? ''));
+
+        if (!preg_match('/^[A-Za-z0-9._-]{4,128}$/', $googleId)) {
+            $this->json(['ok' => false, 'message' => 'google_id invalido'], 422);
+            return;
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $this->json(['ok' => false, 'message' => 'email invalido'], 422);
+            return;
+        }
+        if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
+            $this->json(['ok' => false, 'message' => 'Nombre invalido'], 422);
+            return;
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $find = $this->pdo->prepare(
+                'SELECT id FROM users WHERE google_id = :google_id OR email = :email LIMIT 1'
+            );
+            $find->execute([
+                ':google_id' => $googleId,
+                ':email' => $email,
+            ]);
+            $userRow = $find->fetch();
+
+            if ($userRow === false) {
+                $insert = $this->pdo->prepare(
+                    'INSERT INTO users (google_id, email, full_name, status, created_at)
+                     VALUES (:google_id, :email, :full_name, :status, :created_at)'
+                );
+                $insert->execute([
+                    ':google_id' => $googleId,
+                    ':email' => $email,
+                    ':full_name' => $fullName,
+                    ':status' => 'pending',
+                    ':created_at' => gmdate('c'),
+                ]);
+                $userId = (int) $this->pdo->lastInsertId();
+            } else {
+                $userId = (int) $userRow['id'];
+                $update = $this->pdo->prepare(
+                    'UPDATE users SET google_id = :google_id, email = :email, full_name = :full_name WHERE id = :id'
+                );
+                $update->execute([
+                    ':google_id' => $googleId,
+                    ':email' => $email,
+                    ':full_name' => $fullName,
+                    ':id' => $userId,
+                ]);
+            }
+
+            $token = $this->issueToken($userId);
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->json(['ok' => false, 'message' => 'No se pudo procesar el login'], 500);
+            return;
+        }
+
+        $user = $this->getUserById($userId);
+        if ($user === null) {
+            $this->json(['ok' => false, 'message' => 'Usuario no encontrado'], 500);
+            return;
+        }
+
+        $userModules = $this->getUserModules($userId);
+        $this->json([
+            'ok' => true,
+            'token' => $token,
+            'user' => $this->userPayload($user, $userModules),
+            'message' => count($userModules) === 0 ? 'Perfil pendiente de asignacion por administrador.' : 'Login correcto.',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiMe(array $user): void
+    {
+        $modules = $this->getUserModules((int) $user['id']);
+
+        $this->json([
+            'ok' => true,
+            'user' => $this->userPayload($user, $modules),
+            'pending_profile' => count($modules) === 0 || (string) $user['status'] !== 'active',
+            'message' => count($modules) === 0 || (string) $user['status'] !== 'active'
+                ? 'Pendiente de asignar perfil por parte del administrador.'
+                : 'Perfil activo.',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiActivities(array $user): void
+    {
+        if (!$this->userHasActiveAccess($user)) {
+            $this->json([
+                'ok' => true,
+                'activities' => [],
+                'message' => 'Tu perfil aun no tiene acceso a modulos.',
+            ]);
+            return;
+        }
+
+        $moduleCodes = array_map(
+            static fn (array $module): string => (string) $module['code'],
+            $this->getUserModules((int) $user['id'])
+        );
+
+        if (count($moduleCodes) === 0) {
+            $this->json(['ok' => true, 'activities' => []]);
+            return;
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($moduleCodes), '?'));
+        $query = $this->pdo->prepare(
+            "SELECT a.*,
+                (
+                    SELECT COUNT(*) FROM reservations r
+                    WHERE r.activity_id = a.id
+                    AND r.status IN ('pending_user_confirm', 'pending_admin_approval', 'confirmed')
+                ) AS occupied_slots
+             FROM activities a
+             WHERE a.status = 'active'
+               AND a.module_code IN ($placeholders)
+               AND a.ends_at >= ?
+             ORDER BY a.starts_at ASC"
+        );
+        $params = $moduleCodes;
+        $params[] = gmdate('c');
+        $query->execute($params);
+
+        $activities = [];
+        foreach ($query->fetchAll() as $row) {
+            $capacity = (int) $row['capacity'];
+            $occupied = (int) $row['occupied_slots'];
+            $remaining = max(0, $capacity - $occupied);
+
+            $activities[] = [
+                'id' => (int) $row['id'],
+                'title' => (string) $row['title'],
+                'module_code' => (string) $row['module_code'],
+                'starts_at' => (string) $row['starts_at'],
+                'ends_at' => (string) $row['ends_at'],
+                'capacity' => $capacity,
+                'occupied_slots' => $occupied,
+                'remaining_slots' => $remaining,
+                'location' => (string) $row['location'],
+                'notes' => (string) $row['notes'],
+            ];
+        }
+
+        $this->json([
+            'ok' => true,
+            'activities' => $activities,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiReserveActivity(array $user, int $activityId): void
+    {
+        if (!$this->userHasActiveAccess($user)) {
+            $this->json(['ok' => false, 'message' => 'Tu perfil no tiene acceso a reservas.'], 403);
+            return;
+        }
+
+        if ($activityId <= 0) {
+            $this->json(['ok' => false, 'message' => 'Actividad invalida.'], 422);
+            return;
+        }
+
+        $activity = $this->getActivityById($activityId);
+        if ($activity === null || (string) $activity['status'] !== 'active') {
+            $this->json(['ok' => false, 'message' => 'Actividad no disponible.'], 404);
+            return;
+        }
+
+        $userModules = $this->getUserModules((int) $user['id']);
+        $moduleCodes = array_map(static fn (array $module): string => (string) $module['code'], $userModules);
+        if (!in_array((string) $activity['module_code'], $moduleCodes, true)) {
+            $this->json(['ok' => false, 'message' => 'No tienes acceso a este modulo.'], 403);
+            return;
+        }
+
+        $exists = $this->pdo->prepare(
+            'SELECT id FROM reservations
+             WHERE user_id = :user_id
+             AND activity_id = :activity_id
+             AND status IN (\'pending_user_confirm\', \'pending_admin_approval\', \'confirmed\', \'waitlist\')
+             LIMIT 1'
+        );
+        $exists->execute([
+            ':user_id' => (int) $user['id'],
+            ':activity_id' => $activityId,
+        ]);
+        if ($exists->fetch() !== false) {
+            $this->json(['ok' => false, 'message' => 'Ya tienes una reserva activa o en lista de espera.'], 409);
+            return;
+        }
+
+        $now = gmdate('c');
+
+        $this->pdo->beginTransaction();
+        try {
+            $occupied = $this->occupiedSlots($activityId);
+            $capacity = (int) $activity['capacity'];
+
+            $status = 'waitlist';
+            $confirmationCode = null;
+            $confirmationCodeHash = null;
+            $confirmationDeadline = null;
+
+            if ($occupied < $capacity) {
+                $status = 'pending_user_confirm';
+                $confirmationCode = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+                $confirmationCodeHash = hash('sha256', $confirmationCode);
+                $confirmationDeadline = gmdate('c', time() + 1800);
+            }
+
+            $insert = $this->pdo->prepare(
+                'INSERT INTO reservations (user_id, activity_id, status, confirmation_code_hash, confirmation_deadline, payment_status, created_at, updated_at)
+                 VALUES (:user_id, :activity_id, :status, :confirmation_code_hash, :confirmation_deadline, :payment_status, :created_at, :updated_at)'
+            );
+            $insert->execute([
+                ':user_id' => (int) $user['id'],
+                ':activity_id' => $activityId,
+                ':status' => $status,
+                ':confirmation_code_hash' => $confirmationCodeHash,
+                ':confirmation_deadline' => $confirmationDeadline,
+                ':payment_status' => $status === 'waitlist' ? 'not_applicable' : 'pending',
+                ':created_at' => $now,
+                ':updated_at' => $now,
+            ]);
+
+            $reservationId = (int) $this->pdo->lastInsertId();
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->json(['ok' => false, 'message' => 'No se pudo crear la reserva.'], 500);
+            return;
+        }
+
+        if ($status === 'waitlist') {
+            $this->json([
+                'ok' => true,
+                'reservation_id' => $reservationId,
+                'status' => 'waitlist',
+                'message' => 'Sin cupo disponible. Has entrado en lista de espera.',
+            ]);
+            return;
+        }
+
+        $this->json([
+            'ok' => true,
+            'reservation_id' => $reservationId,
+            'status' => 'pending_user_confirm',
+            // Local mode helper: this simulates confirmation code sent by email.
+            'local_confirmation_code' => $confirmationCode,
+            'message' => 'Reserva creada. Confirma con el codigo recibido para pasar a validacion admin.',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiConfirmReservation(array $user, int $reservationId): void
+    {
+        $payload = Security::jsonBody();
+        $confirmationCode = trim((string) ($payload['confirmation_code'] ?? ''));
+
+        if (!preg_match('/^\d{6}$/', $confirmationCode)) {
+            $this->json(['ok' => false, 'message' => 'Codigo de confirmacion invalido.'], 422);
+            return;
+        }
+
+        $query = $this->pdo->prepare(
+            'SELECT id, status, confirmation_code_hash, confirmation_deadline
+             FROM reservations
+             WHERE id = :id AND user_id = :user_id
+             LIMIT 1'
+        );
+        $query->execute([
+            ':id' => $reservationId,
+            ':user_id' => (int) $user['id'],
+        ]);
+        $reservation = $query->fetch();
+
+        if ($reservation === false || (string) $reservation['status'] !== 'pending_user_confirm') {
+            $this->json(['ok' => false, 'message' => 'La reserva no requiere confirmacion o no existe.'], 404);
+            return;
+        }
+
+        $deadlineRaw = (string) ($reservation['confirmation_deadline'] ?? '');
+        $deadline = date_create_immutable($deadlineRaw);
+        if ($deadline === false || $deadline < new \DateTimeImmutable('now', new \DateTimeZone('UTC'))) {
+            $this->json(['ok' => false, 'message' => 'El codigo ha expirado.'], 410);
+            return;
+        }
+
+        $codeHash = hash('sha256', $confirmationCode);
+        if (!hash_equals((string) $reservation['confirmation_code_hash'], $codeHash)) {
+            $this->json(['ok' => false, 'message' => 'Codigo incorrecto.'], 422);
+            return;
+        }
+
+        $update = $this->pdo->prepare(
+            'UPDATE reservations
+             SET status = :status,
+                 confirmation_code_hash = NULL,
+                 confirmation_deadline = NULL,
+                 updated_at = :updated_at
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':status' => 'pending_admin_approval',
+            ':updated_at' => gmdate('c'),
+            ':id' => $reservationId,
+        ]);
+
+        $this->json([
+            'ok' => true,
+            'status' => 'pending_admin_approval',
+            'message' => 'Reserva confirmada por usuario. Queda pendiente de validacion final por administrador.',
+            'google_calendar' => 'Integracion real pendiente para entorno productivo.',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiCancelReservation(array $user, int $reservationId): void
+    {
+        $query = $this->pdo->prepare(
+            'SELECT r.id, r.activity_id, r.status, a.starts_at
+             FROM reservations r
+             INNER JOIN activities a ON a.id = r.activity_id
+             WHERE r.id = :id AND r.user_id = :user_id
+             LIMIT 1'
+        );
+        $query->execute([
+            ':id' => $reservationId,
+            ':user_id' => (int) $user['id'],
+        ]);
+        $reservation = $query->fetch();
+
+        if ($reservation === false) {
+            $this->json(['ok' => false, 'message' => 'Reserva no encontrada.'], 404);
+            return;
+        }
+
+        if ((string) $reservation['status'] === 'cancelled') {
+            $this->json(['ok' => false, 'message' => 'La reserva ya esta cancelada.'], 409);
+            return;
+        }
+
+        $startDate = date_create_immutable((string) $reservation['starts_at']);
+        if ($startDate === false) {
+            $this->json(['ok' => false, 'message' => 'Error en fecha de actividad.'], 500);
+            return;
+        }
+
+        $hoursUntilActivity = ((int) $startDate->format('U') - time()) / 3600;
+        if ($hoursUntilActivity < (int) $this->config['reservation_cancellation_hours']) {
+            $this->json([
+                'ok' => false,
+                'message' => 'No se puede cancelar con menos de 2 horas de antelacion.',
+            ], 409);
+            return;
+        }
+
+        $oldStatus = (string) $reservation['status'];
+        $seatStatuses = ['pending_user_confirm', 'pending_admin_approval', 'confirmed'];
+        $releasesSeat = in_array($oldStatus, $seatStatuses, true);
+
+        $this->pdo->beginTransaction();
+        try {
+            $update = $this->pdo->prepare(
+                'UPDATE reservations SET status = :status, updated_at = :updated_at WHERE id = :id'
+            );
+            $update->execute([
+                ':status' => 'cancelled',
+                ':updated_at' => gmdate('c'),
+                ':id' => (int) $reservation['id'],
+            ]);
+
+            if ($releasesSeat) {
+                $waitlist = $this->pdo->prepare(
+                    'SELECT id FROM reservations
+                     WHERE activity_id = :activity_id
+                     AND status = :status
+                     ORDER BY created_at ASC
+                     LIMIT 1'
+                );
+                $waitlist->execute([
+                    ':activity_id' => (int) $reservation['activity_id'],
+                    ':status' => 'waitlist',
+                ]);
+                $next = $waitlist->fetch();
+
+                if ($next !== false) {
+                    $promote = $this->pdo->prepare(
+                        'UPDATE reservations
+                         SET status = :status, updated_at = :updated_at
+                         WHERE id = :id'
+                    );
+                    $promote->execute([
+                        ':status' => 'pending_admin_approval',
+                        ':updated_at' => gmdate('c'),
+                        ':id' => (int) $next['id'],
+                    ]);
+                }
+            }
+
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->json(['ok' => false, 'message' => 'No se pudo cancelar la reserva.'], 500);
+            return;
+        }
+
+        $this->json([
+            'ok' => true,
+            'message' => 'Reserva cancelada correctamente.',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiReservations(array $user): void
+    {
+        $query = $this->pdo->prepare(
+            'SELECT r.id, r.status, r.payment_status, r.created_at, r.updated_at,
+                    a.id AS activity_id, a.title, a.module_code, a.starts_at, a.ends_at, a.location
+             FROM reservations r
+             INNER JOIN activities a ON a.id = r.activity_id
+             WHERE r.user_id = :user_id
+             ORDER BY a.starts_at ASC'
+        );
+        $query->execute([':user_id' => (int) $user['id']]);
+
+        $reservations = [];
+        foreach ($query->fetchAll() as $row) {
+            $reservations[] = [
+                'id' => (int) $row['id'],
+                'status' => (string) $row['status'],
+                'payment_status' => (string) $row['payment_status'],
+                'created_at' => (string) $row['created_at'],
+                'updated_at' => (string) $row['updated_at'],
+                'activity' => [
+                    'id' => (int) $row['activity_id'],
+                    'title' => (string) $row['title'],
+                    'module_code' => (string) $row['module_code'],
+                    'starts_at' => (string) $row['starts_at'],
+                    'ends_at' => (string) $row['ends_at'],
+                    'location' => (string) $row['location'],
+                ],
+            ];
+        }
+
+        $this->json([
+            'ok' => true,
+            'reservations' => $reservations,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiAnnouncements(array $user): void
+    {
+        $userModules = $this->getUserModules((int) $user['id']);
+        $moduleCodes = array_map(static fn (array $module): string => (string) $module['code'], $userModules);
+
+        $now = gmdate('c');
+        if (count($moduleCodes) === 0) {
+            $query = $this->pdo->prepare(
+                'SELECT id, module_code, title, body, starts_at, ends_at
+                 FROM announcements
+                 WHERE is_active = 1
+                   AND starts_at <= :now
+                   AND ends_at >= :now
+                   AND module_code IS NULL
+                 ORDER BY starts_at DESC'
+            );
+            $query->execute([':now' => $now]);
+        } else {
+            $placeholders = implode(', ', array_fill(0, count($moduleCodes), '?'));
+            $query = $this->pdo->prepare(
+                "SELECT id, module_code, title, body, starts_at, ends_at
+                 FROM announcements
+                 WHERE is_active = 1
+                   AND starts_at <= ?
+                   AND ends_at >= ?
+                   AND (module_code IS NULL OR module_code IN ($placeholders))
+                 ORDER BY starts_at DESC"
+            );
+            $params = [$now, $now, ...$moduleCodes];
+            $query->execute($params);
+        }
+
+        $announcements = [];
+        foreach ($query->fetchAll() as $row) {
+            $announcements[] = [
+                'id' => (int) $row['id'],
+                'module_code' => $row['module_code'] === null ? null : (string) $row['module_code'],
+                'title' => (string) $row['title'],
+                'body' => (string) $row['body'],
+                'starts_at' => (string) $row['starts_at'],
+                'ends_at' => (string) $row['ends_at'],
+            ];
+        }
+
+        $this->json([
+            'ok' => true,
+            'announcements' => $announcements,
+        ]);
+    }
+
+    /**
+     * Resolves and validates API bearer token.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function authenticatedApiUser(): ?array
+    {
+        $header = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+        if (!preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $header, $matches)) {
+            return null;
+        }
+
+        $rawToken = strtolower($matches[1]);
+        $tokenHash = hash('sha256', $rawToken);
+
+        $query = $this->pdo->prepare(
+            'SELECT u.id, u.google_id, u.email, u.full_name, u.status
+             FROM api_tokens t
+             INNER JOIN users u ON u.id = t.user_id
+             WHERE t.token_hash = :token_hash
+               AND t.expires_at > :now
+             LIMIT 1'
+        );
+        $query->execute([
+            ':token_hash' => $tokenHash,
+            ':now' => gmdate('c'),
+        ]);
+        $user = $query->fetch();
+        if ($user === false) {
+            return null;
+        }
+
+        $touch = $this->pdo->prepare(
+            'UPDATE api_tokens SET last_used_at = :last_used_at WHERE token_hash = :token_hash'
+        );
+        $touch->execute([
+            ':last_used_at' => gmdate('c'),
+            ':token_hash' => $tokenHash,
+        ]);
+
+        return $user;
+    }
+
+    private function issueToken(int $userId): string
+    {
+        $rawToken = bin2hex(random_bytes(32));
+        $tokenHash = hash('sha256', $rawToken);
+
+        $expiresAt = gmdate('c', time() + ((int) $this->config['token_ttl_hours'] * 3600));
+        $insert = $this->pdo->prepare(
+            'INSERT INTO api_tokens (user_id, token_hash, expires_at, created_at, last_used_at)
+             VALUES (:user_id, :token_hash, :expires_at, :created_at, :last_used_at)'
+        );
+        $insert->execute([
+            ':user_id' => $userId,
+            ':token_hash' => $tokenHash,
+            ':expires_at' => $expiresAt,
+            ':created_at' => gmdate('c'),
+            ':last_used_at' => gmdate('c'),
+        ]);
+
+        return $rawToken;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function getUserById(int $userId): ?array
+    {
+        $query = $this->pdo->prepare(
+            'SELECT id, google_id, email, full_name, status
+             FROM users
+             WHERE id = :id
+             LIMIT 1'
+        );
+        $query->execute([':id' => $userId]);
+        $row = $query->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function getUserModules(int $userId): array
+    {
+        $query = $this->pdo->prepare(
+            'SELECT m.id, m.code, m.name
+             FROM user_modules um
+             INNER JOIN modules m ON m.id = um.module_id
+             WHERE um.user_id = :user_id
+             ORDER BY m.name ASC'
+        );
+        $query->execute([':user_id' => $userId]);
+        return $query->fetchAll();
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @param array<int, array<string, mixed>> $modules
+     * @return array<string, mixed>
+     */
+    private function userPayload(array $user, array $modules): array
+    {
+        return [
+            'id' => (int) $user['id'],
+            'google_id' => (string) $user['google_id'],
+            'email' => (string) $user['email'],
+            'full_name' => (string) $user['full_name'],
+            'status' => (string) $user['status'],
+            'modules' => array_map(
+                static fn (array $module): array => [
+                    'id' => (int) $module['id'],
+                    'code' => (string) $module['code'],
+                    'name' => (string) $module['name'],
+                ],
+                $modules
+            ),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function userHasActiveAccess(array $user): bool
+    {
+        if ((string) $user['status'] !== 'active') {
+            return false;
+        }
+
+        $modules = $this->getUserModules((int) $user['id']);
+        return count($modules) > 0;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function getActivityById(int $activityId): ?array
+    {
+        $query = $this->pdo->prepare(
+            'SELECT id, title, module_code, starts_at, ends_at, capacity, location, notes, status
+             FROM activities
+             WHERE id = :id
+             LIMIT 1'
+        );
+        $query->execute([':id' => $activityId]);
+        $row = $query->fetch();
+        return $row === false ? null : $row;
+    }
+
+    private function occupiedSlots(int $activityId): int
+    {
+        $query = $this->pdo->prepare(
+            'SELECT COUNT(*) AS total
+             FROM reservations
+             WHERE activity_id = :activity_id
+               AND status IN (\'pending_user_confirm\', \'pending_admin_approval\', \'confirmed\')'
+        );
+        $query->execute([':activity_id' => $activityId]);
+        $row = $query->fetch();
+        return $row === false ? 0 : (int) $row['total'];
+    }
+
+    private function isAdminAuthenticated(): bool
+    {
+        return isset($_SESSION['admin_id']) && (int) $_SESSION['admin_id'] > 0;
+    }
+
+    private function count(string $sql): int
+    {
+        $result = $this->pdo->query($sql)->fetchColumn();
+        return (int) $result;
+    }
+
+    /**
+     * Simple flash messages persisted in session between redirects.
+     */
+    private function setFlash(string $type, string $message): void
+    {
+        $_SESSION['flash'] = [
+            'type' => $type,
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * @return array<string, string>|null
+     */
+    private function pullFlash(): ?array
+    {
+        if (!isset($_SESSION['flash']) || !is_array($_SESSION['flash'])) {
+            return null;
+        }
+
+        $flash = $_SESSION['flash'];
+        unset($_SESSION['flash']);
+
+        return [
+            'type' => (string) ($flash['type'] ?? 'info'),
+            'message' => (string) ($flash['message'] ?? ''),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function render(string $viewName, array $data = []): void
+    {
+        $viewFile = __DIR__ . '/../views/' . $viewName . '.php';
+        if (!is_file($viewFile)) {
+            http_response_code(500);
+            echo 'Vista no encontrada: ' . Security::e($viewName);
+            return;
+        }
+
+        $title = (string) ($data['title'] ?? $this->config['app_name']);
+        $flash = $this->pullFlash();
+        $csrfToken = Security::csrfToken();
+        $adminUsername = (string) ($_SESSION['admin_username'] ?? '');
+        $currentPath = rawurldecode((string) (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?? '/'));
+
+        extract($data, EXTR_SKIP);
+        include __DIR__ . '/../views/layout.php';
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function json(array $payload, int $statusCode = 200): void
+    {
+        http_response_code($statusCode);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+}

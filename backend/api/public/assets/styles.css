@@ -1,0 +1,291 @@
+/* Global reset and baseline typography for dashboard readability. */
+* {
+    box-sizing: border-box;
+}
+
+/* Main body theme with soft neutral palette suitable for long admin sessions. */
+body {
+    margin: 0;
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(160deg, #f4f6f8 0%, #eaf0f2 100%);
+    color: #18222c;
+}
+
+/* Top header containing product identity and session actions. */
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    background: #10212f;
+    color: #e6eff7;
+}
+
+/* Brand block in header. */
+.brand {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+/* Admin account area in header. */
+.admin-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+/* Small text treatment for admin username and helper notes. */
+.admin-label,
+.small-note {
+    font-size: 0.85rem;
+    color: #d4dee8;
+}
+
+/* Horizontal main menu for dashboard sections. */
+.menu {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.8rem 1.5rem;
+    background: #193245;
+}
+
+/* Menu links with clear active and hover states. */
+.menu a {
+    text-decoration: none;
+    color: #e2edf5;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    padding: 0.45rem 0.9rem;
+    font-size: 0.9rem;
+}
+
+/* Current section marker for orientation. */
+.menu a.active {
+    background: #f2f8ff;
+    color: #14304a;
+    border-color: #f2f8ff;
+}
+
+/* Main content container. */
+.container {
+    width: min(1200px, 94vw);
+    margin: 1.2rem auto 2rem;
+    display: grid;
+    gap: 1rem;
+}
+
+/* Generic card component for forms, summaries and content blocks. */
+.card {
+    background: #ffffff;
+    border: 1px solid #d8e3ea;
+    border-radius: 0.8rem;
+    padding: 1rem 1.1rem;
+    box-shadow: 0 7px 20px rgba(16, 33, 47, 0.06);
+}
+
+/* Stats responsive layout for dashboard numbers. */
+.stats-grid {
+    display: grid;
+    gap: 0.8rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+/* Individual KPI card styling. */
+.stat-card {
+    background: #ffffff;
+    border: 1px solid #d8e3ea;
+    border-radius: 0.75rem;
+    padding: 1rem;
+}
+
+/* Balanced heading spacing inside cards and tables. */
+h1,
+h2,
+p {
+    margin-top: 0;
+}
+
+/* Flash message component for success/error feedback after actions. */
+.flash {
+    border-radius: 0.6rem;
+    padding: 0.8rem 1rem;
+    border: 1px solid transparent;
+}
+
+/* Success flash palette. */
+.flash-success {
+    background: #e5f6eb;
+    border-color: #a7dfb8;
+    color: #12592d;
+}
+
+/* Error flash palette. */
+.flash-error {
+    background: #fdeaea;
+    border-color: #f0b5b5;
+    color: #7a1717;
+}
+
+/* Form grid for compact yet readable control distribution. */
+.form-grid {
+    display: grid;
+    gap: 0.8rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Helper class to make one control consume full row width. */
+.col-span-2 {
+    grid-column: span 2;
+}
+
+/* Standard label formatting for accessibility and visual hierarchy. */
+label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    color: #223648;
+}
+
+/* Inputs share common dimensions and border treatment. */
+input,
+select,
+textarea {
+    width: 100%;
+    border: 1px solid #bfd0dd;
+    border-radius: 0.55rem;
+    padding: 0.55rem 0.65rem;
+    font-size: 0.95rem;
+    background: #fbfdff;
+    color: #12212f;
+}
+
+/* Focus ring improves keyboard accessibility and visibility. */
+input:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: #2f78b5;
+    box-shadow: 0 0 0 3px rgba(47, 120, 181, 0.18);
+}
+
+/* Reusable button base. */
+.button {
+    display: inline-block;
+    border: 1px solid #1f5b8d;
+    background: #1f5b8d;
+    color: #ffffff;
+    border-radius: 0.55rem;
+    padding: 0.55rem 0.9rem;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+/* Small button variant for inline actions. */
+.button-small {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.82rem;
+}
+
+/* Secondary action button tone. */
+.button-secondary {
+    background: #7a8b99;
+    border-color: #7a8b99;
+}
+
+/* Destructive action button tone with high contrast. */
+.button-danger {
+    background: #b64545;
+    border-color: #b64545;
+}
+
+/* Inline forms displayed side by side where actions are short. */
+.inline-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.2rem 0.2rem 0.2rem 0;
+}
+
+/* Inline label variant for compact control groups. */
+.inline-label {
+    min-width: 140px;
+}
+
+/* Module checkboxes container with clear visual boundary. */
+.module-fieldset {
+    border: 1px dashed #bfd0dd;
+    border-radius: 0.55rem;
+    padding: 0.5rem;
+    display: grid;
+    gap: 0.3rem;
+}
+
+/* Table wrapper for horizontal overflow on smaller devices. */
+.table-wrap {
+    overflow-x: auto;
+    background: #ffffff;
+    border: 1px solid #d8e3ea;
+    border-radius: 0.8rem;
+}
+
+/* Table baseline structure. */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 900px;
+}
+
+/* Cell spacing and separators tuned for dense management data. */
+th,
+td {
+    border-bottom: 1px solid #e1e9ef;
+    text-align: left;
+    padding: 0.65rem;
+    vertical-align: top;
+    font-size: 0.9rem;
+}
+
+/* Table headers with stronger contrast for quick scanning. */
+th {
+    background: #eff5f9;
+    color: #16344a;
+}
+
+/* Small tag component for statuses and modules. */
+.tag {
+    display: inline-flex;
+    align-items: center;
+    background: #e6eef5;
+    color: #143048;
+    border-radius: 999px;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.78rem;
+    margin: 0.1rem 0.1rem 0.1rem 0;
+}
+
+/* Pending tag accent for lack of permissions. */
+.tag-pending {
+    background: #fef4d7;
+    color: #7a5600;
+}
+
+/* Responsive adjustments for mobile widths. */
+@media (max-width: 860px) {
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .col-span-2 {
+        grid-column: span 1;
+    }
+
+    .menu {
+        padding-bottom: 1rem;
+    }
+}
+
