@@ -2,31 +2,14 @@
 
 ## Ejecutar
 
-Define las variables de conexion MariaDB:
+Configura todo con asistente interactivo (sin editar secretos a mano):
 
 ```powershell
-$env:AGELAI_DB_HOST="127.0.0.1"
-$env:AGELAI_DB_PORT="3306"
-$env:AGELAI_DB_NAME="agelai_dietas"
-$env:AGELAI_DB_USER="root"
-$env:AGELAI_DB_PASS=""
+cd tools
+.\setup_local_secrets.ps1
 ```
 
-Configura secreto interno y, si quieres integraciones reales, Google + SMTP:
-
-```powershell
-$env:AGELAI_APP_SECRET="cambia-esta-clave-local-larga-y-unica"
-$env:AGELAI_GOOGLE_CLIENT_ID="tu-client-id.apps.googleusercontent.com"
-$env:AGELAI_GOOGLE_CLIENT_SECRET="tu-client-secret"
-$env:AGELAI_GOOGLE_REDIRECT_URI="http://127.0.0.1:8000/oauth/google/callback"
-$env:AGELAI_SMTP_HOST="smtp.tu-proveedor.com"
-$env:AGELAI_SMTP_PORT="587"
-$env:AGELAI_SMTP_SECURE="tls"
-$env:AGELAI_SMTP_USER="usuario-smtp"
-$env:AGELAI_SMTP_PASS="password-smtp"
-$env:AGELAI_SMTP_FROM_EMAIL="noreply@tu-dominio.com"
-$env:AGELAI_SMTP_FROM_NAME="Club Agelai"
-```
+Esto genera `backend/api/.env.local`, que se carga automaticamente en `bootstrap.php`.
 
 Luego inicia el servidor:
 
@@ -55,7 +38,9 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 
 ## API (JSON)
 
-- `POST /api/auth/google-login`
+- `POST /api/auth/google-login/start`
+- `GET /api/auth/google-login/status?state=...`
+- `POST /api/auth/google-login` (fallback legacy local)
 - `GET /api/me`
 - `POST /api/google/connect/start`
 - `GET /api/google/connect/status`

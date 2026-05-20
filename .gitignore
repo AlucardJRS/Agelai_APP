@@ -14,3 +14,6 @@
 *.iml
 Thumbs.db
 Desktop.ini
+
+# Local backend secrets for development.
+backend/api/.env.local

@@ -19,12 +19,18 @@ final class Integrations
     }
 
     /**
-     * Builds Google OAuth consent URL for account linking.
+     * Builds Google OAuth consent URL.
+     *
+     * @param array<int, string>|null $scopesOverride
      */
-    public function buildGoogleAuthUrl(string $state): string
+    public function buildGoogleAuthUrl(
+        string $state,
+        ?array $scopesOverride = null,
+        string $prompt = 'consent'
+    ): string
     {
         $google = (array) ($this->config['google_oauth'] ?? []);
-        $scopes = (array) ($google['scopes'] ?? []);
+        $scopes = $scopesOverride === null ? (array) ($google['scopes'] ?? []) : $scopesOverride;
 
         $params = [
             'client_id' => $this->requiredString($google, 'client_id'),
@@ -33,7 +39,7 @@ final class Integrations
             'scope' => implode(' ', array_map('strval', $scopes)),
             'access_type' => 'offline',
             'include_granted_scopes' => 'true',
-            'prompt' => 'consent',
+            'prompt' => $prompt,
             'state' => $state,
         ];
 
@@ -79,6 +85,20 @@ final class Integrations
 
     public function fetchGoogleUserEmail(string $accessToken): ?string
     {
+        $profile = $this->fetchGoogleUserProfile($accessToken);
+        if ($profile === null) {
+            return null;
+        }
+
+        $email = (string) ($profile['email'] ?? '');
+        return filter_var($email, FILTER_VALIDATE_EMAIL) ? $email : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function fetchGoogleUserProfile(string $accessToken): ?array
+    {
         $json = $this->httpGetJson(
             'https://www.googleapis.com/oauth2/v2/userinfo',
             [
@@ -86,8 +106,7 @@ final class Integrations
             ]
         );
 
-        $email = (string) ($json['email'] ?? '');
-        return filter_var($email, FILTER_VALIDATE_EMAIL) ? $email : null;
+        return is_array($json) ? $json : null;
     }
 
     /**
@@ -345,4 +364,3 @@ final class Integrations
         return isset($source[$key]) ? trim((string) $source[$key]) : '';
     }
 }
-

@@ -279,6 +279,27 @@ final class Database
             );
 
             $this->pdo->exec(
+                'CREATE TABLE IF NOT EXISTS google_mobile_login_states (
+                    state_token CHAR(64) NOT NULL,
+                    user_id BIGINT UNSIGNED DEFAULT NULL,
+                    google_email VARCHAR(190) DEFAULT NULL,
+                    api_token_enc TEXT DEFAULT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT \'pending\',
+                    error_message VARCHAR(500) DEFAULT NULL,
+                    expires_at VARCHAR(35) NOT NULL,
+                    completed_at VARCHAR(35) DEFAULT NULL,
+                    consumed_at VARCHAR(35) DEFAULT NULL,
+                    created_at VARCHAR(35) NOT NULL,
+                    updated_at VARCHAR(35) NOT NULL,
+                    PRIMARY KEY (state_token),
+                    KEY idx_google_mobile_login_status (status),
+                    KEY idx_google_mobile_login_expires (expires_at),
+                    CONSTRAINT fk_google_mobile_login_user
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+
+            $this->pdo->exec(
                 'CREATE TABLE IF NOT EXISTS integration_logs (
                     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                     user_id BIGINT UNSIGNED DEFAULT NULL,

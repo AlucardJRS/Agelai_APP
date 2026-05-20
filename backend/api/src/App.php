@@ -60,6 +60,7 @@ final class App
         // Lower thresholds for authentication and reservation confirmation endpoints.
         if (
             ($path === '/api/auth/google-login' && $method === 'POST')
+            || ($path === '/api/auth/google-login/start' && $method === 'POST')
             || ($path === '/dashboard/login' && $method === 'POST')
             || str_starts_with($path, '/api/reservations/')
         ) {
@@ -137,6 +138,16 @@ final class App
 
     private function handleApiRequest(string $method, string $path): void
     {
+        if ($method === 'POST' && $path === '/api/auth/google-login/start') {
+            $this->apiGoogleMobileLoginStart();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/api/auth/google-login/status') {
+            $this->apiGoogleMobileLoginStatus();
+            return;
+        }
+
         if ($method === 'POST' && $path === '/api/auth/google-login') {
             $this->apiGoogleLogin();
             return;
@@ -911,6 +922,179 @@ final class App
     }
 
     /**
+     * Starts real Google OAuth login flow for mobile/web app.
+     */
+    private function apiGoogleMobileLoginStart(): void
+    {
+        if (!$this->integrations->googleOauthConfigured()) {
+            $this->json([
+                'ok' => false,
+                'message' => 'Google OAuth no esta configurado en el servidor.',
+            ], 503);
+            return;
+        }
+
+        $state = bin2hex(random_bytes(32));
+        $expiresAt = gmdate('c', time() + 900);
+
+        $insert = $this->pdo->prepare(
+            'INSERT INTO google_mobile_login_states
+                (state_token, status, expires_at, created_at, updated_at)
+             VALUES
+                (:state_token, :status, :expires_at, :created_at, :updated_at)'
+        );
+        $insert->execute([
+            ':state_token' => $state,
+            ':status' => 'pending',
+            ':expires_at' => $expiresAt,
+            ':created_at' => gmdate('c'),
+            ':updated_at' => gmdate('c'),
+        ]);
+
+        $cleanup = $this->pdo->prepare(
+            'DELETE FROM google_mobile_login_states
+             WHERE expires_at < :now
+                OR (status IN (\'completed\', \'error\') AND updated_at < :completed_cutoff)'
+        );
+        $cleanup->execute([
+            ':now' => gmdate('c'),
+            ':completed_cutoff' => gmdate('c', time() - 86400),
+        ]);
+
+        $authUrl = $this->integrations->buildGoogleAuthUrl(
+            $state,
+            ['openid', 'email', 'profile'],
+            'select_account'
+        );
+
+        $this->json([
+            'ok' => true,
+            'state' => $state,
+            'auth_url' => $authUrl,
+            'expires_at' => $expiresAt,
+            'message' => 'OAuth Google iniciado.',
+        ]);
+    }
+
+    /**
+     * Poll endpoint used by mobile app after opening Google OAuth browser.
+     */
+    private function apiGoogleMobileLoginStatus(): void
+    {
+        $state = trim((string) ($_GET['state'] ?? ''));
+        if (!preg_match('/^[a-f0-9]{64}$/', $state)) {
+            $this->json([
+                'ok' => false,
+                'message' => 'Parametro state invalido.',
+            ], 422);
+            return;
+        }
+
+        $query = $this->pdo->prepare(
+            'SELECT state_token, user_id, google_email, api_token_enc, status, error_message, expires_at, completed_at, consumed_at
+             FROM google_mobile_login_states
+             WHERE state_token = :state_token
+             LIMIT 1'
+        );
+        $query->execute([':state_token' => $state]);
+        $row = $query->fetch();
+
+        if ($row === false) {
+            $this->json([
+                'ok' => false,
+                'message' => 'Estado de login no encontrado.',
+            ], 404);
+            return;
+        }
+
+        $status = (string) ($row['status'] ?? 'pending');
+        $expiresAt = (string) ($row['expires_at'] ?? '');
+
+        if ($expiresAt < gmdate('c') && $status === 'pending') {
+            $expire = $this->pdo->prepare(
+                'UPDATE google_mobile_login_states
+                 SET status = :status, error_message = :error_message, updated_at = :updated_at
+                 WHERE state_token = :state_token'
+            );
+            $expire->execute([
+                ':status' => 'error',
+                ':error_message' => 'Sesion de login Google expirada.',
+                ':updated_at' => gmdate('c'),
+                ':state_token' => $state,
+            ]);
+
+            $this->json([
+                'ok' => true,
+                'status' => 'error',
+                'message' => 'Sesion de login Google expirada. Inicia de nuevo.',
+            ]);
+            return;
+        }
+
+        if ($status === 'pending') {
+            $this->json([
+                'ok' => true,
+                'status' => 'pending',
+                'message' => 'Esperando autorizacion Google...',
+            ]);
+            return;
+        }
+
+        if ($status === 'error') {
+            $this->json([
+                'ok' => true,
+                'status' => 'error',
+                'message' => (string) ($row['error_message'] ?? 'No se pudo completar login Google.'),
+            ]);
+            return;
+        }
+
+        if ((string) ($row['consumed_at'] ?? '') !== '') {
+            $this->json([
+                'ok' => true,
+                'status' => 'consumed',
+                'message' => 'Login ya consumido por la app.',
+            ]);
+            return;
+        }
+
+        $appSecret = (string) ($this->config['app_secret_key'] ?? '');
+        $token = Security::decryptSecret((string) ($row['api_token_enc'] ?? ''), $appSecret);
+        if ($token === null || $token === '') {
+            $this->json([
+                'ok' => true,
+                'status' => 'error',
+                'message' => 'No se pudo recuperar token de login.',
+            ]);
+            return;
+        }
+
+        $consume = $this->pdo->prepare(
+            'UPDATE google_mobile_login_states
+             SET consumed_at = :consumed_at, updated_at = :updated_at
+             WHERE state_token = :state_token'
+        );
+        $consume->execute([
+            ':consumed_at' => gmdate('c'),
+            ':updated_at' => gmdate('c'),
+            ':state_token' => $state,
+        ]);
+
+        $userId = (int) ($row['user_id'] ?? 0);
+        $user = $this->getUserById($userId);
+        $modules = $user === null ? [] : $this->getUserModules($userId);
+
+        $this->json([
+            'ok' => true,
+            'status' => 'completed',
+            'token' => $token,
+            'user' => $user === null ? null : $this->userPayload($user, $modules),
+            'google_email' => (string) ($row['google_email'] ?? ''),
+            'message' => 'Login Google completado.',
+        ]);
+    }
+
+    /**
      * @param array<string, mixed> $user
      */
     private function apiMe(array $user): void
@@ -1014,19 +1198,40 @@ final class App
             return;
         }
 
-        $stateQuery = $this->pdo->prepare(
+        $mobileStateQuery = $this->pdo->prepare(
+            'SELECT state_token, user_id, google_email, api_token_enc, status, error_message, expires_at, completed_at, consumed_at
+             FROM google_mobile_login_states
+             WHERE state_token = :state_token
+             LIMIT 1'
+        );
+        $mobileStateQuery->execute([':state_token' => $state]);
+        $mobileStateRow = $mobileStateQuery->fetch();
+        if ($mobileStateRow !== false) {
+            $this->handleGoogleMobileLoginCallback($mobileStateRow, $state, $code);
+            return;
+        }
+
+        $connectStateQuery = $this->pdo->prepare(
             'SELECT state_token, user_id, expires_at, used_at
              FROM google_oauth_states
              WHERE state_token = :state_token
              LIMIT 1'
         );
-        $stateQuery->execute([':state_token' => $state]);
-        $stateRow = $stateQuery->fetch();
-
-        if ($stateRow === false) {
-            $this->renderOauthResultPage(false, 'Estado OAuth no encontrado.');
+        $connectStateQuery->execute([':state_token' => $state]);
+        $connectStateRow = $connectStateQuery->fetch();
+        if ($connectStateRow !== false) {
+            $this->handleGoogleCalendarLinkCallback($connectStateRow, $state, $code);
             return;
         }
+
+        $this->renderOauthResultPage(false, 'Estado OAuth no encontrado.');
+    }
+
+    /**
+     * @param array<string, mixed> $stateRow
+     */
+    private function handleGoogleCalendarLinkCallback(array $stateRow, string $state, string $code): void
+    {
         if ((string) ($stateRow['used_at'] ?? '') !== '') {
             $this->renderOauthResultPage(false, 'Estado OAuth ya utilizado.');
             return;
@@ -1038,8 +1243,8 @@ final class App
 
         try {
             $tokenPayload = $this->integrations->exchangeGoogleAuthCode($code);
-            $accessToken = (string) ($tokenPayload['access_token'] ?? '');
-            $refreshToken = (string) ($tokenPayload['refresh_token'] ?? '');
+            $accessToken = trim((string) ($tokenPayload['access_token'] ?? ''));
+            $refreshToken = trim((string) ($tokenPayload['refresh_token'] ?? ''));
             $expiresIn = (int) ($tokenPayload['expires_in'] ?? 3600);
             $scope = (string) ($tokenPayload['scope'] ?? '');
 
@@ -1105,6 +1310,166 @@ final class App
                 $exception->getMessage()
             );
             $this->renderOauthResultPage(false, 'No se pudo vincular Google: ' . $exception->getMessage());
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $stateRow
+     */
+    private function handleGoogleMobileLoginCallback(array $stateRow, string $state, string $code): void
+    {
+        $status = (string) ($stateRow['status'] ?? 'pending');
+        if ($status !== 'pending') {
+            $this->renderOauthResultPage(false, 'Este login Google ya se proceso. Vuelve a la app y reinicia el acceso.');
+            return;
+        }
+        if ((string) ($stateRow['expires_at'] ?? '') < gmdate('c')) {
+            $expired = $this->pdo->prepare(
+                'UPDATE google_mobile_login_states
+                 SET status = :status, error_message = :error_message, updated_at = :updated_at
+                 WHERE state_token = :state_token'
+            );
+            $expired->execute([
+                ':status' => 'error',
+                ':error_message' => 'Sesion expirada en callback OAuth.',
+                ':updated_at' => gmdate('c'),
+                ':state_token' => $state,
+            ]);
+            $this->renderOauthResultPage(false, 'Sesion OAuth expirada. Inicia el login de nuevo desde la app.');
+            return;
+        }
+
+        try {
+            $tokenPayload = $this->integrations->exchangeGoogleAuthCode($code);
+            $accessToken = trim((string) ($tokenPayload['access_token'] ?? ''));
+            if ($accessToken === '') {
+                throw new \RuntimeException('Google no devolvio access_token para login.');
+            }
+
+            $profile = $this->integrations->fetchGoogleUserProfile($accessToken);
+            if ($profile === null) {
+                throw new \RuntimeException('No se pudo leer perfil de Google.');
+            }
+
+            $googleId = trim((string) ($profile['id'] ?? ''));
+            $email = trim((string) ($profile['email'] ?? ''));
+            $fullName = trim((string) ($profile['name'] ?? ''));
+
+            if (!preg_match('/^[A-Za-z0-9._-]{4,128}$/', $googleId)) {
+                throw new \RuntimeException('Google ID invalido en respuesta OAuth.');
+            }
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                throw new \RuntimeException('Email de Google invalido.');
+            }
+            if ($fullName === '') {
+                $fullName = $email;
+            }
+            $fullName = mb_substr($fullName, 0, 120);
+
+            $appSecret = (string) ($this->config['app_secret_key'] ?? '');
+            $this->pdo->beginTransaction();
+            try {
+                $find = $this->pdo->prepare(
+                    'SELECT id FROM users WHERE google_id = :google_id OR email = :email LIMIT 1'
+                );
+                $find->execute([
+                    ':google_id' => $googleId,
+                    ':email' => $email,
+                ]);
+                $userRow = $find->fetch();
+
+                if ($userRow === false) {
+                    $insert = $this->pdo->prepare(
+                        'INSERT INTO users (google_id, email, full_name, status, created_at)
+                         VALUES (:google_id, :email, :full_name, :status, :created_at)'
+                    );
+                    $insert->execute([
+                        ':google_id' => $googleId,
+                        ':email' => $email,
+                        ':full_name' => $fullName,
+                        ':status' => 'pending',
+                        ':created_at' => gmdate('c'),
+                    ]);
+                    $userId = (int) $this->pdo->lastInsertId();
+                } else {
+                    $userId = (int) $userRow['id'];
+                    $updateUser = $this->pdo->prepare(
+                        'UPDATE users SET google_id = :google_id, email = :email, full_name = :full_name WHERE id = :id'
+                    );
+                    $updateUser->execute([
+                        ':google_id' => $googleId,
+                        ':email' => $email,
+                        ':full_name' => $fullName,
+                        ':id' => $userId,
+                    ]);
+                }
+
+                $apiToken = $this->issueToken($userId);
+                $apiTokenEnc = Security::encryptSecret($apiToken, $appSecret);
+                if ($apiTokenEnc === null) {
+                    throw new \RuntimeException('No se pudo cifrar token de app.');
+                }
+
+                $complete = $this->pdo->prepare(
+                    'UPDATE google_mobile_login_states
+                     SET user_id = :user_id,
+                         google_email = :google_email,
+                         api_token_enc = :api_token_enc,
+                         status = :status,
+                         error_message = NULL,
+                         completed_at = :completed_at,
+                         updated_at = :updated_at
+                     WHERE state_token = :state_token'
+                );
+                $complete->execute([
+                    ':user_id' => $userId,
+                    ':google_email' => $email,
+                    ':api_token_enc' => $apiTokenEnc,
+                    ':status' => 'completed',
+                    ':completed_at' => gmdate('c'),
+                    ':updated_at' => gmdate('c'),
+                    ':state_token' => $state,
+                ]);
+
+                $this->pdo->commit();
+
+                $this->logIntegration(
+                    $userId,
+                    'google_mobile_login',
+                    'success',
+                    $email,
+                    'Login Google completado para app movil'
+                );
+            } catch (\Throwable $inner) {
+                $this->pdo->rollBack();
+                throw $inner;
+            }
+
+            $this->renderOauthResultPage(
+                true,
+                'Login Google completado. Vuelve a la app y espera unos segundos para continuar.'
+            );
+        } catch (\Throwable $exception) {
+            $markError = $this->pdo->prepare(
+                'UPDATE google_mobile_login_states
+                 SET status = :status, error_message = :error_message, updated_at = :updated_at
+                 WHERE state_token = :state_token'
+            );
+            $markError->execute([
+                ':status' => 'error',
+                ':error_message' => mb_substr($exception->getMessage(), 0, 500),
+                ':updated_at' => gmdate('c'),
+                ':state_token' => $state,
+            ]);
+
+            $this->logIntegration(
+                null,
+                'google_mobile_login',
+                'error',
+                'oauth_callback',
+                $exception->getMessage()
+            );
+            $this->renderOauthResultPage(false, 'No se pudo completar login Google: ' . $exception->getMessage());
         }
     }
 

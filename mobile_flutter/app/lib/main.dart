@@ -66,45 +66,115 @@ class _SessionGateState extends State<SessionGate> {
   bool _loading = false;
   String? _errorMessage;
 
-  /// Executes local login with pseudo Google data.
-  Future<void> _login({
-    required String googleId,
-    required String email,
-    required String fullName,
-  }) async {
+  /// Starts OAuth Google login and opens browser for real account credentials.
+  Future<void> _loginWithGoogle() async {
     setState(() {
       _loading = true;
       _errorMessage = null;
     });
 
     try {
-      final Map<String, dynamic> result = await _apiClient.login(
-        googleId: googleId,
-        email: email,
-        fullName: fullName,
+      final Map<String, dynamic> start = await _apiClient.googleLoginStart();
+      final String state = start['state'] as String? ?? '';
+      final String authUrl = start['auth_url'] as String? ?? '';
+      if (state.isEmpty || authUrl.isEmpty) {
+        throw ApiException('No se pudo iniciar login Google.');
+      }
+
+      final bool launched = await launchUrl(
+        Uri.parse(authUrl),
+        mode: LaunchMode.externalApplication,
       );
+      if (!launched) {
+        throw ApiException('No se pudo abrir Google para iniciar sesion.');
+      }
 
-      final String token = result['token'] as String;
-      _apiClient.setToken(token);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Introduce tus credenciales de Google en el navegador y vuelve a la app.',
+            ),
+          ),
+        );
+      }
 
-      setState(() {
-        _token = token;
-      });
-
-      await _reloadData();
+      unawaited(_pollGoogleLoginStatus(state));
     } on ApiException catch (error) {
       setState(() {
         _errorMessage = error.message;
       });
     } catch (_) {
       setState(() {
-        _errorMessage = 'No se pudo iniciar sesion.';
+        _errorMessage = 'No se pudo iniciar el acceso con Google.';
       });
     } finally {
       setState(() {
         _loading = false;
       });
     }
+  }
+
+  /// Polls backend for completion of OAuth Google login.
+  Future<void> _pollGoogleLoginStatus(String state) async {
+    for (int attempt = 0; attempt < 18; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 4));
+      if (!mounted) {
+        return;
+      }
+
+      try {
+        final Map<String, dynamic> status = await _apiClient.googleLoginStatus(
+          state: state,
+        );
+        final String flowStatus = status['status'] as String? ?? 'pending';
+
+        if (flowStatus == 'pending') {
+          continue;
+        }
+        if (flowStatus == 'error') {
+          setState(() {
+            _errorMessage = status['message'] as String? ??
+                'No se pudo completar login Google.';
+          });
+          return;
+        }
+        if (flowStatus == 'consumed') {
+          setState(() {
+            _errorMessage =
+                status['message'] as String? ?? 'Login ya consumido.';
+          });
+          return;
+        }
+        if (flowStatus == 'completed') {
+          final String token = status['token'] as String? ?? '';
+          if (token.isEmpty) {
+            setState(() {
+              _errorMessage = 'No se recibio token de sesion.';
+            });
+            return;
+          }
+          _apiClient.setToken(token);
+          setState(() {
+            _token = token;
+          });
+          await _reloadData();
+          return;
+        }
+      } on ApiException catch (error) {
+        setState(() {
+          _errorMessage = error.message;
+        });
+        return;
+      } catch (_) {
+        // Retry while the flow is pending.
+      }
+    }
+
+    setState(() {
+      _errorMessage =
+          'Tiempo de espera agotado. Si completaste Google, pulsa de nuevo "Entrar con Google".';
+    });
   }
 
   /// Logs out user and clears in-memory session data.
@@ -562,7 +632,7 @@ class _SessionGateState extends State<SessionGate> {
       return LoginScreen(
         isLoading: _loading,
         errorMessage: _errorMessage,
-        onLogin: _login,
+        onLoginWithGoogle: _loginWithGoogle,
       );
     }
 
@@ -672,52 +742,18 @@ class _SessionGateState extends State<SessionGate> {
   }
 }
 
-/// Login screen with local pseudo Google ID registration.
-class LoginScreen extends StatefulWidget {
+/// Login screen using real Google OAuth flow.
+class LoginScreen extends StatelessWidget {
   const LoginScreen({
     required this.isLoading,
     required this.errorMessage,
-    required this.onLogin,
+    required this.onLoginWithGoogle,
     super.key,
   });
 
   final bool isLoading;
   final String? errorMessage;
-  final Future<void> Function({
-    required String googleId,
-    required String email,
-    required String fullName,
-  }) onLogin;
-
-  @override
-  State<LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<LoginScreen> {
-  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  final TextEditingController _googleIdController = TextEditingController();
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _nameController = TextEditingController();
-
-  @override
-  void dispose() {
-    _googleIdController.dispose();
-    _emailController.dispose();
-    _nameController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    await widget.onLogin(
-      googleId: _googleIdController.text.trim(),
-      email: _emailController.text.trim(),
-      fullName: _nameController.text.trim(),
-    );
-  }
+  final Future<void> Function() onLoginWithGoogle;
 
   @override
   Widget build(BuildContext context) {
@@ -742,75 +778,39 @@ class _LoginScreenState extends State<LoginScreen> {
               margin: const EdgeInsets.all(18),
               child: Padding(
                 padding: const EdgeInsets.all(18),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      const Text(
-                        'Club Agelai',
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                        ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    const Text(
+                      'Club Agelai',
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w800,
                       ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'Acceso local con ID de Google (modo pruebas).',
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Acceso seguro con tu cuenta Google.',
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: isLoading ? null : onLoginWithGoogle,
+                      icon: const Icon(Icons.login),
+                      label: const Text('Entrar con Google'),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Se abrira Google para que introduzcas tus credenciales.',
+                    ),
+                    if (errorMessage != null) ...<Widget>[
+                      const SizedBox(height: 12),
+                      Text(
+                        errorMessage!,
+                        style: TextStyle(color: Colors.red.shade800),
                       ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _googleIdController,
-                        decoration: const InputDecoration(
-                          labelText: 'Google ID',
-                        ),
-                        validator: (String? value) {
-                          if (value == null || value.trim().length < 4) {
-                            return 'Introduce un Google ID valido.';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: _emailController,
-                        decoration: const InputDecoration(labelText: 'Email'),
-                        validator: (String? value) {
-                          if (value == null || !value.contains('@')) {
-                            return 'Introduce un email valido.';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 10),
-                      TextFormField(
-                        controller: _nameController,
-                        decoration: const InputDecoration(
-                          labelText: 'Nombre completo',
-                        ),
-                        validator: (String? value) {
-                          if (value == null || value.trim().length < 2) {
-                            return 'Introduce tu nombre.';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 14),
-                      FilledButton.icon(
-                        onPressed: widget.isLoading ? null : _submit,
-                        icon: const Icon(Icons.login),
-                        label: const Text('Entrar'),
-                      ),
-                      if (widget.errorMessage != null) ...<Widget>[
-                        const SizedBox(height: 12),
-                        Text(
-                          widget.errorMessage!,
-                          style: TextStyle(color: Colors.red.shade800),
-                        ),
-                      ],
                     ],
-                  ),
+                  ],
                 ),
               ),
             ),
@@ -1312,19 +1312,16 @@ class ApiClient {
     _token = token;
   }
 
-  Future<Map<String, dynamic>> login({
-    required String googleId,
-    required String email,
-    required String fullName,
-  }) =>
-      _request(
+  Future<Map<String, dynamic>> googleLoginStart() => _request(
         method: 'POST',
-        path: '/api/auth/google-login',
-        body: <String, dynamic>{
-          'google_id': googleId,
-          'email': email,
-          'full_name': fullName,
-        },
+        path: '/api/auth/google-login/start',
+        authRequired: false,
+      );
+
+  Future<Map<String, dynamic>> googleLoginStatus({required String state}) =>
+      _request(
+        method: 'GET',
+        path: '/api/auth/google-login/status?state=$state',
         authRequired: false,
       );
 

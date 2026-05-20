@@ -18,52 +18,33 @@ CREATE DATABASE IF NOT EXISTS agelai_dietas
   COLLATE utf8mb4_unicode_ci;
 ```
 
-Configura credenciales mediante variables de entorno antes de levantar el backend:
+## 3) Configurar Secretos Sin Editar Archivos a Mano
+
+Ejecuta el asistente interactivo:
 
 ```powershell
-$env:AGELAI_DB_HOST="127.0.0.1"
-$env:AGELAI_DB_PORT="3306"
-$env:AGELAI_DB_NAME="agelai_dietas"
-$env:AGELAI_DB_USER="root"
-$env:AGELAI_DB_PASS=""
+cd tools
+.\setup_local_secrets.ps1
 ```
 
-## 3) Configurar Secretos Locales (Google + SMTP)
+Este asistente te pedira por pantalla:
 
-Define primero una clave interna para cifrar tokens OAuth en MariaDB:
+- MariaDB local
+- Google OAuth (`client_id`, `client_secret`, redirect URI)
+- SMTP (si quieres correo real en pruebas)
+- `AGELAI_APP_SECRET` (si no lo introduces, se genera automaticamente)
 
-```powershell
-$env:AGELAI_APP_SECRET="cambia-esta-clave-local-larga-y-unica"
-```
+Guarda todo en `backend/api/.env.local` y el backend lo carga automaticamente al arrancar.
 
-### Google OAuth + Calendar
+## 4) Google Cloud (una sola vez)
 
-En Google Cloud Console crea credenciales OAuth 2.0 (tipo Web) y configura:
+En Google Cloud Console crea credenciales OAuth 2.0 tipo **Web** y registra:
 
 - Redirect URI: `http://127.0.0.1:8000/oauth/google/callback`
-- Scope usado por la app: `https://www.googleapis.com/auth/calendar.events`
 
-Variables de entorno:
+Con eso, cuando pulses `Entrar con Google` en la app, Google mostrara la pantalla real de login (usuario + contraseña o cuenta ya iniciada).
 
-```powershell
-$env:AGELAI_GOOGLE_CLIENT_ID="tu-client-id.apps.googleusercontent.com"
-$env:AGELAI_GOOGLE_CLIENT_SECRET="tu-client-secret"
-$env:AGELAI_GOOGLE_REDIRECT_URI="http://127.0.0.1:8000/oauth/google/callback"
-```
-
-### SMTP real (correo de confirmacion)
-
-```powershell
-$env:AGELAI_SMTP_HOST="smtp.tu-proveedor.com"
-$env:AGELAI_SMTP_PORT="587"
-$env:AGELAI_SMTP_SECURE="tls"
-$env:AGELAI_SMTP_USER="usuario-smtp"
-$env:AGELAI_SMTP_PASS="password-smtp"
-$env:AGELAI_SMTP_FROM_EMAIL="noreply@tu-dominio.com"
-$env:AGELAI_SMTP_FROM_NAME="Club Agelai"
-```
-
-## 4) Iniciar Backend + Dashboard Web
+## 5) Iniciar Backend + Dashboard Web
 
 Desde la raiz del proyecto:
 
@@ -84,7 +65,7 @@ Credenciales admin iniciales:
 
 Las tablas se crean automaticamente al primer arranque.
 
-## 5) Iniciar App Flutter Android
+## 6) Iniciar App Flutter Android
 
 Si es la primera vez y faltan carpetas nativas (`android/`, etc):
 
@@ -106,14 +87,14 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 
 - `mobile_flutter/app/lib/main.dart`
 
-## 6) Flujo de Prueba Recomendado
+## 7) Flujo de Prueba Recomendado
 
 1. Inicia sesion en dashboard admin.
 2. Crea actividades con cupos y sede desde **Actividades**:
    - `Cala d'Or (rotonda Farash)` (principal)
    - `Cala Egos (delante del SYP)`
-3. En la app Flutter, registra un usuario por Google ID local.
-4. Veras estado pendiente de perfil.
+3. En la app Flutter pulsa **Entrar con Google** y completa tus credenciales reales.
+4. Veras estado pendiente de perfil si aun no tienes modulos.
 5. En dashboard, asigna modulos y estado `active`.
 6. En app, abre **Perfil** y pulsa **Vincular Google** para autorizar Calendar.
 7. Reserva una actividad y confirma el codigo recibido por email.
@@ -123,7 +104,7 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
    - se crea evento en Google Calendar del usuario vinculado
    - se bloquea la plaza de forma definitiva
 
-## 7) Seguridad Implementada en Esta Version
+## 8) Seguridad Implementada en Esta Version
 
 - Consultas preparadas con PDO (mitigacion SQL injection).
 - CSRF token en formularios del dashboard.
@@ -138,7 +119,7 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 - Regla de cancelacion minima de 2 horas.
 - Aprobacion manual admin obligatoria en todas las reservas.
 
-## 8) Pendiente para Produccion (fase siguiente)
+## 9) Pendiente para Produccion (fase siguiente)
 
 - HTTPS obligatorio + HSTS.
 - Rotacion de secretos y cuentas de servicio segun hosting final.
