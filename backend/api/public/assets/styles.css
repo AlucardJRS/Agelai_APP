@@ -261,13 +261,15 @@ textarea:focus {
 .inline-form {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.35rem;
     margin: 0.15rem 0.15rem 0.15rem 0;
 }
 
 /* Compact label width avoids layout jumps in inline controls. */
 .inline-label {
-    min-width: 142px;
+    min-width: 170px;
+    max-width: 240px;
 }
 
 /* Dashed fieldset boundary distinguishes grouped module options. */

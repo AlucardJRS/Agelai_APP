@@ -5,14 +5,15 @@ declare(strict_types=1);
     <h1>Usuarios y Permisos por Modulo</h1>
     <p>
         Regla de negocio: usuario nuevo entra sin acceso y estado pendiente.
-        Desde aqui puedes crear usuarios, bloquearlos y gestionar permisos por modulo.
+        Desde aqui puedes crear usuarios, bloquearlos, darlos de baja, vincular su Google ID y gestionar permisos por modulo.
     </p>
 </section>
 
 <section class="card">
     <h2>Crear Usuario Desde Dashboard</h2>
     <p class="small-note">
-        Si no conoces el Google ID, dejalo vacio. El sistema creara un ID provisional y se actualizara automaticamente cuando el usuario acceda con Google.
+        Si no conoces el Google ID, dejalo vacio. El sistema creara un ID provisional.
+        Luego puedes vincular el Google ID real desde la tabla de usuarios.
     </p>
     <form method="post" action="/dashboard/users/create" class="form-grid">
         <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
@@ -113,6 +114,21 @@ declare(strict_types=1);
                             <input type="hidden" name="user_id" value="<?= (int) $user['id']; ?>">
 
                             <label class="inline-label">
+                                Nombre
+                                <input type="text" name="full_name" value="<?= Security::e((string) $user['full_name']); ?>" maxlength="120" required>
+                            </label>
+
+                            <label class="inline-label">
+                                Email
+                                <input type="email" name="email" value="<?= Security::e((string) $user['email']); ?>" maxlength="180" required>
+                            </label>
+
+                            <label class="inline-label">
+                                Google ID
+                                <input type="text" name="google_id" value="<?= Security::e($googleId); ?>" maxlength="128">
+                            </label>
+
+                            <label class="inline-label">
                                 Estado
                                 <select name="status">
                                     <option value="pending" <?= (string) $user['status'] === 'pending' ? 'selected' : ''; ?>>pending</option>
@@ -146,6 +162,11 @@ declare(strict_types=1);
                                 <button type="submit" class="button button-small button-danger">Bloquear ahora</button>
                             </form>
                         <?php endif; ?>
+                        <form method="post" action="/dashboard/users/deactivate" class="inline-form">
+                            <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
+                            <input type="hidden" name="user_id" value="<?= (int) $user['id']; ?>">
+                            <button type="submit" class="button button-small button-secondary">Dar de baja</button>
+                        </form>
                     </td>
                 </tr>
             <?php endforeach; ?>

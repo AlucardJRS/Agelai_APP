@@ -269,6 +269,11 @@ final class App
             return;
         }
 
+        if ($method === 'POST' && $path === '/dashboard/users/deactivate') {
+            $this->dashboardUsersDeactivate();
+            return;
+        }
+
         if ($method === 'GET' && $path === '/dashboard/activities') {
             $this->dashboardActivities();
             return;
@@ -425,6 +430,9 @@ final class App
         }
 
         $userId = (int) ($_POST['user_id'] ?? 0);
+        $fullName = trim((string) ($_POST['full_name'] ?? ''));
+        $email = trim((string) ($_POST['email'] ?? ''));
+        $googleIdInput = trim((string) ($_POST['google_id'] ?? ''));
         $status = (string) ($_POST['status'] ?? 'pending');
         $moduleIdsRaw = $_POST['module_ids'] ?? [];
         $allowedStatus = ['pending', 'active', 'blocked'];
@@ -434,6 +442,22 @@ final class App
             header('Location: /dashboard/users');
             return;
         }
+        if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
+            $this->setFlash('error', 'Nombre invalido para usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $this->setFlash('error', 'Email invalido para usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if ($googleIdInput !== '' && !preg_match('/^[A-Za-z0-9._-]{4,128}$/', $googleIdInput)) {
+            $this->setFlash('error', 'Google ID invalido. Usa solo letras, numeros, punto, guion o guion bajo.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        $googleId = $googleIdInput === '' ? 'manual_local_' . bin2hex(random_bytes(8)) : $googleIdInput;
 
         $moduleIds = [];
         if (is_array($moduleIdsRaw)) {
@@ -452,8 +476,18 @@ final class App
                 $status = 'pending';
             }
 
-            $updateUser = $this->pdo->prepare('UPDATE users SET status = :status WHERE id = :id');
+            $updateUser = $this->pdo->prepare(
+                'UPDATE users
+                 SET full_name = :full_name,
+                     email = :email,
+                     google_id = :google_id,
+                     status = :status
+                 WHERE id = :id'
+            );
             $updateUser->execute([
+                ':full_name' => $fullName,
+                ':email' => $email,
+                ':google_id' => $googleId,
                 ':status' => $status,
                 ':id' => $userId,
             ]);
@@ -480,7 +514,11 @@ final class App
             $this->pdo->commit();
         } catch (\Throwable $exception) {
             $this->pdo->rollBack();
-            $this->setFlash('error', 'No se pudo actualizar el usuario.');
+            $message = 'No se pudo actualizar el usuario.';
+            if (str_contains(strtolower($exception->getMessage()), 'duplicate')) {
+                $message = 'No se pudo actualizar: email o Google ID ya existen.';
+            }
+            $this->setFlash('error', $message);
             header('Location: /dashboard/users');
             return;
         }
@@ -626,6 +664,45 @@ final class App
         }
 
         $this->setFlash('success', 'Usuario bloqueado correctamente.');
+        header('Location: /dashboard/users');
+    }
+
+    private function dashboardUsersDeactivate(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $userId = (int) ($_POST['user_id'] ?? 0);
+        if ($userId <= 0) {
+            $this->setFlash('error', 'Usuario invalido para dar de baja.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $update = $this->pdo->prepare('UPDATE users SET status = :status WHERE id = :id');
+            $update->execute([
+                ':status' => 'pending',
+                ':id' => $userId,
+            ]);
+
+            $clearModules = $this->pdo->prepare('DELETE FROM user_modules WHERE user_id = :user_id');
+            $clearModules->execute([':user_id' => $userId]);
+
+            $this->revokeUserApiTokens($userId);
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->setFlash('error', 'No se pudo dar de baja al usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->setFlash('success', 'Usuario dado de baja (sin acceso y sin modulos).');
         header('Location: /dashboard/users');
     }
 
