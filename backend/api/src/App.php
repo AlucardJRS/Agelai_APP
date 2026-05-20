@@ -6,10 +6,13 @@ declare(strict_types=1);
  */
 final class App
 {
+    private Integrations $integrations;
+
     public function __construct(
         private readonly \PDO $pdo,
         private readonly array $config
     ) {
+        $this->integrations = new Integrations($config);
     }
 
     public function handle(): void
@@ -24,6 +27,11 @@ final class App
 
         if ($path === '/assets/styles.css') {
             $this->serveStylesheet();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/oauth/google/callback') {
+            $this->handleGoogleOauthCallback();
             return;
         }
 
@@ -137,6 +145,21 @@ final class App
         $user = $this->authenticatedApiUser();
         if ($user === null) {
             $this->json(['ok' => false, 'message' => 'No autorizado'], 401);
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/api/google/connect/start') {
+            $this->apiGoogleConnectStart($user);
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/api/google/connect/status') {
+            $this->apiGoogleConnectStatus($user);
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/api/google/disconnect') {
+            $this->apiGoogleDisconnect($user);
             return;
         }
 
@@ -578,7 +601,7 @@ final class App
     private function dashboardReservations(): void
     {
         $reservations = $this->pdo->query(
-            'SELECT r.id, r.status, r.payment_status, r.payment_method, r.created_at, r.updated_at,
+            'SELECT r.id, r.status, r.payment_status, r.payment_method, r.calendar_sync_status, r.google_calendar_event_id, r.confirmation_email_sent_at, r.created_at, r.updated_at,
                     u.full_name, u.email,
                     a.title, a.module_code, a.starts_at, a.ends_at, a.capacity, a.location,
                     (
@@ -615,11 +638,17 @@ final class App
             return;
         }
 
+        $reservationForNotifications = null;
+
         $this->pdo->beginTransaction();
         try {
             $query = $this->pdo->prepare(
-                'SELECT r.id, r.status, r.payment_method
+                'SELECT r.id, r.user_id, r.status, r.payment_method,
+                        u.email, u.full_name,
+                        a.title, a.module_code, a.starts_at, a.ends_at, a.location
                  FROM reservations r
+                 INNER JOIN users u ON u.id = r.user_id
+                 INNER JOIN activities a ON a.id = r.activity_id
                  WHERE r.id = :id
                  LIMIT 1'
             );
@@ -649,13 +678,53 @@ final class App
                 ':id' => $reservationId,
             ]);
 
+            $reservationForNotifications = $reservation;
             $this->pdo->commit();
-            $this->setFlash('success', 'Reserva aprobada y confirmada.');
         } catch (\Throwable $exception) {
             $this->pdo->rollBack();
             $this->setFlash('error', 'No se pudo aprobar la reserva.');
+            header('Location: /dashboard/reservations');
+            return;
         }
 
+        $notes = [];
+        if (is_array($reservationForNotifications)) {
+            $emailResult = $this->sendReservationApprovedEmail($reservationForNotifications);
+            if ($emailResult['ok']) {
+                $markEmail = $this->pdo->prepare(
+                    'UPDATE reservations
+                     SET confirmation_email_sent_at = :sent_at
+                     WHERE id = :id'
+                );
+                $markEmail->execute([
+                    ':sent_at' => gmdate('c'),
+                    ':id' => (int) $reservationForNotifications['id'],
+                ]);
+                $notes[] = 'email enviado';
+            } else {
+                $notes[] = 'email pendiente';
+            }
+
+            $calendarResult = $this->syncReservationToGoogleCalendar($reservationForNotifications);
+            if ($calendarResult['ok']) {
+                $notes[] = 'calendar sincronizado';
+            } else {
+                $notes[] = 'calendar pendiente';
+            }
+
+            $this->logIntegration(
+                (int) ($reservationForNotifications['user_id'] ?? 0),
+                'reservation_approval',
+                'success',
+                (string) ($reservationForNotifications['email'] ?? ''),
+                implode(', ', $notes)
+            );
+        }
+
+        $this->setFlash(
+            'success',
+            'Reserva aprobada y confirmada.' . (count($notes) > 0 ? ' (' . implode(' | ', $notes) . ')' : '')
+        );
         header('Location: /dashboard/reservations');
     }
 
@@ -847,17 +916,196 @@ final class App
     private function apiMe(array $user): void
     {
         $modules = $this->getUserModules((int) $user['id']);
+        $googleConnection = $this->getUserGoogleConnection((int) $user['id']);
 
         $this->json([
             'ok' => true,
             'user' => $this->userPayload($user, $modules),
             'pending_profile' => count($modules) === 0 || (string) $user['status'] !== 'active',
+            'google_calendar_connected' => $googleConnection !== null,
+            'google_calendar_email' => $googleConnection === null ? null : (string) ($googleConnection['google_email'] ?? ''),
             'payment_methods' => $this->paymentMethodsMap(),
             'locations' => $this->locationNamesMap(),
             'message' => count($modules) === 0 || (string) $user['status'] !== 'active'
                 ? 'Pendiente de asignar perfil por parte del administrador.'
                 : 'Perfil activo.',
         ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiGoogleConnectStart(array $user): void
+    {
+        if (!$this->integrations->googleOauthConfigured()) {
+            $this->json([
+                'ok' => false,
+                'message' => 'Google OAuth no esta configurado en el servidor.',
+            ], 503);
+            return;
+        }
+
+        $state = bin2hex(random_bytes(32));
+        $expiresAt = gmdate('c', time() + 900);
+
+        $insert = $this->pdo->prepare(
+            'INSERT INTO google_oauth_states (state_token, user_id, expires_at, used_at, created_at)
+             VALUES (:state_token, :user_id, :expires_at, NULL, :created_at)'
+        );
+        $insert->execute([
+            ':state_token' => $state,
+            ':user_id' => (int) $user['id'],
+            ':expires_at' => $expiresAt,
+            ':created_at' => gmdate('c'),
+        ]);
+
+        $cleanup = $this->pdo->prepare('DELETE FROM google_oauth_states WHERE expires_at < :now');
+        $cleanup->execute([':now' => gmdate('c')]);
+
+        $this->json([
+            'ok' => true,
+            'auth_url' => $this->integrations->buildGoogleAuthUrl($state),
+            'expires_at' => $expiresAt,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiGoogleConnectStatus(array $user): void
+    {
+        $connection = $this->getUserGoogleConnection((int) $user['id']);
+        $this->json([
+            'ok' => true,
+            'connected' => $connection !== null,
+            'google_email' => $connection === null ? null : (string) ($connection['google_email'] ?? ''),
+            'token_expires_at' => $connection === null ? null : (string) ($connection['token_expires_at'] ?? ''),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiGoogleDisconnect(array $user): void
+    {
+        $delete = $this->pdo->prepare('DELETE FROM user_google_connections WHERE user_id = :user_id');
+        $delete->execute([':user_id' => (int) $user['id']]);
+
+        $this->json([
+            'ok' => true,
+            'message' => 'Cuenta Google desconectada.',
+        ]);
+    }
+
+    private function handleGoogleOauthCallback(): void
+    {
+        Security::addSecurityHeaders();
+
+        $error = trim((string) ($_GET['error'] ?? ''));
+        if ($error !== '') {
+            $this->renderOauthResultPage(false, 'Google devolvio error: ' . $error);
+            return;
+        }
+
+        $state = trim((string) ($_GET['state'] ?? ''));
+        $code = trim((string) ($_GET['code'] ?? ''));
+        if (!preg_match('/^[a-f0-9]{64}$/', $state) || $code === '') {
+            $this->renderOauthResultPage(false, 'Estado OAuth invalido.');
+            return;
+        }
+
+        $stateQuery = $this->pdo->prepare(
+            'SELECT state_token, user_id, expires_at, used_at
+             FROM google_oauth_states
+             WHERE state_token = :state_token
+             LIMIT 1'
+        );
+        $stateQuery->execute([':state_token' => $state]);
+        $stateRow = $stateQuery->fetch();
+
+        if ($stateRow === false) {
+            $this->renderOauthResultPage(false, 'Estado OAuth no encontrado.');
+            return;
+        }
+        if ((string) ($stateRow['used_at'] ?? '') !== '') {
+            $this->renderOauthResultPage(false, 'Estado OAuth ya utilizado.');
+            return;
+        }
+        if ((string) $stateRow['expires_at'] < gmdate('c')) {
+            $this->renderOauthResultPage(false, 'Sesion OAuth expirada. Inicia el enlace de nuevo.');
+            return;
+        }
+
+        try {
+            $tokenPayload = $this->integrations->exchangeGoogleAuthCode($code);
+            $accessToken = (string) ($tokenPayload['access_token'] ?? '');
+            $refreshToken = (string) ($tokenPayload['refresh_token'] ?? '');
+            $expiresIn = (int) ($tokenPayload['expires_in'] ?? 3600);
+            $scope = (string) ($tokenPayload['scope'] ?? '');
+
+            if ($accessToken === '') {
+                throw new \RuntimeException('No se recibio access_token de Google.');
+            }
+
+            $googleEmail = $this->integrations->fetchGoogleUserEmail($accessToken);
+            $appSecret = (string) ($this->config['app_secret_key'] ?? '');
+            $accessTokenEnc = Security::encryptSecret($accessToken, $appSecret);
+            if ($accessTokenEnc === null) {
+                throw new \RuntimeException('No se pudo cifrar access token.');
+            }
+            $refreshTokenEnc = $refreshToken === '' ? null : Security::encryptSecret($refreshToken, $appSecret);
+            $expiresAt = gmdate('c', time() + max(300, $expiresIn - 60));
+
+            $userId = (int) $stateRow['user_id'];
+            $existingConnection = $this->getUserGoogleConnection($userId);
+            if ($refreshTokenEnc === null && $existingConnection !== null) {
+                $refreshTokenEnc = (string) ($existingConnection['refresh_token_enc'] ?? '') ?: null;
+            }
+
+            $upsert = $this->pdo->prepare(
+                'INSERT INTO user_google_connections
+                    (user_id, google_email, access_token_enc, refresh_token_enc, scope, token_expires_at, created_at, updated_at)
+                 VALUES
+                    (:user_id, :google_email, :access_token_enc, :refresh_token_enc, :scope, :token_expires_at, :created_at, :updated_at)
+                 ON DUPLICATE KEY UPDATE
+                    google_email = VALUES(google_email),
+                    access_token_enc = VALUES(access_token_enc),
+                    refresh_token_enc = VALUES(refresh_token_enc),
+                    scope = VALUES(scope),
+                    token_expires_at = VALUES(token_expires_at),
+                    updated_at = VALUES(updated_at)'
+            );
+            $upsert->execute([
+                ':user_id' => $userId,
+                ':google_email' => $googleEmail,
+                ':access_token_enc' => $accessTokenEnc,
+                ':refresh_token_enc' => $refreshTokenEnc,
+                ':scope' => $scope,
+                ':token_expires_at' => $expiresAt,
+                ':created_at' => gmdate('c'),
+                ':updated_at' => gmdate('c'),
+            ]);
+
+            $markUsed = $this->pdo->prepare(
+                'UPDATE google_oauth_states SET used_at = :used_at WHERE state_token = :state_token'
+            );
+            $markUsed->execute([
+                ':used_at' => gmdate('c'),
+                ':state_token' => $state,
+            ]);
+
+            $this->logIntegration($userId, 'google_oauth', 'success', (string) ($googleEmail ?? 'unknown'), 'Cuenta vinculada');
+            $this->renderOauthResultPage(true, 'Cuenta Google vinculada correctamente. Ya puedes volver a la app.');
+        } catch (\Throwable $exception) {
+            $this->logIntegration(
+                isset($stateRow['user_id']) ? (int) $stateRow['user_id'] : null,
+                'google_oauth',
+                'error',
+                'oauth_callback',
+                $exception->getMessage()
+            );
+            $this->renderOauthResultPage(false, 'No se pudo vincular Google: ' . $exception->getMessage());
+        }
     }
 
     /**
@@ -1043,15 +1291,34 @@ final class App
             return;
         }
 
-        $this->json([
+        $emailSent = false;
+        $emailError = '';
+        if ($confirmationCode !== null) {
+            $emailResult = $this->sendReservationCodeEmail($user, $activity, $confirmationCode, $paymentMethodCode);
+            $emailSent = (bool) $emailResult['ok'];
+            $emailError = (string) $emailResult['error'];
+        }
+
+        $response = [
             'ok' => true,
             'reservation_id' => $reservationId,
             'status' => 'pending_user_confirm',
             'payment_method' => $paymentMethodCode,
             'payment_method_label' => $this->paymentMethodLabel($paymentMethodCode),
-            // Local mode helper: this simulates confirmation code sent by email.
-            'local_confirmation_code' => $confirmationCode,
+            'email_sent' => $emailSent,
             'message' => 'Reserva creada. Confirma con el codigo recibido para pasar a validacion admin.',
+        ];
+
+        // In local/dev or SMTP failure, return code fallback to prevent blocking QA.
+        if (!$emailSent && $confirmationCode !== null) {
+            $response['local_confirmation_code'] = $confirmationCode;
+            if ($emailError !== '') {
+                $response['email_error'] = $emailError;
+            }
+        }
+
+        $this->json([
+            ...$response,
         ]);
     }
 
@@ -1227,7 +1494,7 @@ final class App
     private function apiReservations(array $user): void
     {
         $query = $this->pdo->prepare(
-            'SELECT r.id, r.status, r.payment_status, r.payment_method, r.created_at, r.updated_at,
+            'SELECT r.id, r.status, r.payment_status, r.payment_method, r.google_calendar_event_id, r.calendar_sync_status, r.created_at, r.updated_at,
                     a.id AS activity_id, a.title, a.module_code, a.starts_at, a.ends_at, a.location
              FROM reservations r
              INNER JOIN activities a ON a.id = r.activity_id
@@ -1244,6 +1511,8 @@ final class App
                 'payment_status' => (string) $row['payment_status'],
                 'payment_method' => (string) $row['payment_method'],
                 'payment_method_label' => $this->paymentMethodLabel((string) $row['payment_method']),
+                'google_calendar_event_id' => (string) ($row['google_calendar_event_id'] ?? ''),
+                'calendar_sync_status' => (string) ($row['calendar_sync_status'] ?? ''),
                 'created_at' => (string) $row['created_at'],
                 'updated_at' => (string) $row['updated_at'],
                 'activity' => [
@@ -1503,8 +1772,8 @@ final class App
 
         if ($mapped === []) {
             $mapped = [
-                'cala_dor' => "Cala d'Or",
-                'cala_egos' => 'Cala Egos',
+                'cala_dor' => "Cala d'Or (rotonda Farash)",
+                'cala_egos' => 'Cala Egos (delante del SYP)',
             ];
         }
 
@@ -1567,6 +1836,268 @@ final class App
             7 => 'Domingo',
             default => 'Dia',
         };
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function getUserGoogleConnection(int $userId): ?array
+    {
+        $query = $this->pdo->prepare(
+            'SELECT id, user_id, google_email, access_token_enc, refresh_token_enc, scope, token_expires_at, created_at, updated_at
+             FROM user_google_connections
+             WHERE user_id = :user_id
+             LIMIT 1'
+        );
+        $query->execute([':user_id' => $userId]);
+        $row = $query->fetch();
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @param array<string, mixed> $activity
+     * @return array{ok:bool,error:string}
+     */
+    private function sendReservationCodeEmail(array $user, array $activity, string $code, string $paymentMethod): array
+    {
+        if (!$this->integrations->smtpConfigured()) {
+            return ['ok' => false, 'error' => 'SMTP no configurado'];
+        }
+
+        $email = (string) ($user['email'] ?? '');
+        $name = (string) ($user['full_name'] ?? 'Usuario');
+        $activityTitle = (string) ($activity['title'] ?? 'Actividad');
+        $location = (string) ($activity['location'] ?? '');
+        $startLocal = $this->toLocalDate((string) ($activity['starts_at'] ?? ''));
+        $startLabel = $startLocal === null ? (string) ($activity['starts_at'] ?? '') : $startLocal->format('d/m/Y H:i');
+        $paymentLabel = $this->paymentMethodLabel($paymentMethod);
+
+        $subject = 'Codigo de confirmacion - Club Agelai';
+        $body = "Hola {$name},\n\n"
+            . "Tu pre-reserva para {$activityTitle} se ha creado correctamente.\n"
+            . "Sede: {$location}\n"
+            . "Fecha y hora: {$startLabel}\n"
+            . "Metodo de pago elegido: {$paymentLabel}\n\n"
+            . "Codigo de confirmacion: {$code}\n"
+            . "Este codigo caduca en 30 minutos.\n\n"
+            . "Equipo Club Agelai";
+
+        $sendResult = $this->integrations->sendSmtpMail($email, $subject, $body);
+        $this->logIntegration(
+            isset($user['id']) ? (int) $user['id'] : null,
+            'smtp_confirmation_code',
+            $sendResult['ok'] ? 'success' : 'error',
+            $email,
+            $sendResult['ok'] ? 'Codigo enviado' : $sendResult['error']
+        );
+
+        return $sendResult;
+    }
+
+    /**
+     * @param array<string, mixed> $reservation
+     * @return array{ok:bool,error:string}
+     */
+    private function sendReservationApprovedEmail(array $reservation): array
+    {
+        if (!$this->integrations->smtpConfigured()) {
+            return ['ok' => false, 'error' => 'SMTP no configurado'];
+        }
+
+        $email = (string) ($reservation['email'] ?? '');
+        $name = (string) ($reservation['full_name'] ?? 'Usuario');
+        $activityTitle = (string) ($reservation['title'] ?? 'Actividad');
+        $location = (string) ($reservation['location'] ?? '');
+        $startLocal = $this->toLocalDate((string) ($reservation['starts_at'] ?? ''));
+        $startLabel = $startLocal === null ? (string) ($reservation['starts_at'] ?? '') : $startLocal->format('d/m/Y H:i');
+        $paymentLabel = $this->paymentMethodLabel((string) ($reservation['payment_method'] ?? 'cash'));
+
+        $subject = 'Reserva confirmada - Club Agelai';
+        $body = "Hola {$name},\n\n"
+            . "Tu reserva ha sido aprobada manualmente por el equipo de Club Agelai.\n\n"
+            . "Actividad: {$activityTitle}\n"
+            . "Sede: {$location}\n"
+            . "Fecha y hora: {$startLabel}\n"
+            . "Metodo de pago: {$paymentLabel}\n\n"
+            . "Si no puedes asistir, recuerda cancelar con al menos 2 horas de antelacion.\n\n"
+            . "Equipo Club Agelai";
+
+        $sendResult = $this->integrations->sendSmtpMail($email, $subject, $body);
+        $this->logIntegration(
+            isset($reservation['user_id']) ? (int) $reservation['user_id'] : null,
+            'smtp_reservation_approved',
+            $sendResult['ok'] ? 'success' : 'error',
+            $email,
+            $sendResult['ok'] ? 'Confirmacion enviada' : $sendResult['error']
+        );
+
+        return $sendResult;
+    }
+
+    /**
+     * @param array<string, mixed> $reservation
+     * @return array{ok:bool,error:string,event_id:string}
+     */
+    private function syncReservationToGoogleCalendar(array $reservation): array
+    {
+        $userId = (int) ($reservation['user_id'] ?? 0);
+        if ($userId <= 0) {
+            return ['ok' => false, 'error' => 'Usuario invalido para calendar sync', 'event_id' => ''];
+        }
+
+        $connection = $this->getUserGoogleConnection($userId);
+        if ($connection === null) {
+            $this->markReservationCalendarSync((int) $reservation['id'], 'not_linked', null);
+            return ['ok' => false, 'error' => 'Usuario sin Google vinculado', 'event_id' => ''];
+        }
+
+        try {
+            $accessToken = $this->getValidGoogleAccessToken($connection);
+            if ($accessToken === null) {
+                $this->markReservationCalendarSync((int) $reservation['id'], 'token_error', null);
+                return ['ok' => false, 'error' => 'No se pudo obtener token Google valido', 'event_id' => ''];
+            }
+
+            $startIso = (string) ($reservation['starts_at'] ?? '');
+            $endIso = (string) ($reservation['ends_at'] ?? '');
+            $eventPayload = [
+                'summary' => 'Club Agelai - ' . (string) ($reservation['title'] ?? 'Actividad'),
+                'location' => (string) ($reservation['location'] ?? ''),
+                'description' => 'Reserva confirmada en Club Agelai. Modulo: '
+                    . (string) ($reservation['module_code'] ?? '')
+                    . '. Pago: ' . $this->paymentMethodLabel((string) ($reservation['payment_method'] ?? 'cash')),
+                'start' => [
+                    'dateTime' => $startIso,
+                    'timeZone' => (string) ($this->config['timezone'] ?? 'Europe/Madrid'),
+                ],
+                'end' => [
+                    'dateTime' => $endIso,
+                    'timeZone' => (string) ($this->config['timezone'] ?? 'Europe/Madrid'),
+                ],
+            ];
+
+            $eventId = $this->integrations->createGoogleCalendarEvent($accessToken, $eventPayload);
+            if ($eventId === null) {
+                $this->markReservationCalendarSync((int) $reservation['id'], 'event_error', null);
+                return ['ok' => false, 'error' => 'Google no devolvio event id', 'event_id' => ''];
+            }
+
+            $this->markReservationCalendarSync((int) $reservation['id'], 'synced', $eventId);
+            $this->logIntegration($userId, 'google_calendar', 'success', (string) ($connection['google_email'] ?? ''), 'Event ID: ' . $eventId);
+            return ['ok' => true, 'error' => '', 'event_id' => $eventId];
+        } catch (\Throwable $exception) {
+            $this->markReservationCalendarSync((int) $reservation['id'], 'sync_error', null);
+            $this->logIntegration($userId, 'google_calendar', 'error', (string) ($connection['google_email'] ?? ''), $exception->getMessage());
+            return ['ok' => false, 'error' => $exception->getMessage(), 'event_id' => ''];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $connection
+     */
+    private function getValidGoogleAccessToken(array $connection): ?string
+    {
+        $appSecret = (string) ($this->config['app_secret_key'] ?? '');
+        $accessTokenEnc = (string) ($connection['access_token_enc'] ?? '');
+        $refreshTokenEnc = (string) ($connection['refresh_token_enc'] ?? '');
+        $accessToken = Security::decryptSecret($accessTokenEnc, $appSecret);
+        $expiresAt = (string) ($connection['token_expires_at'] ?? '');
+
+        if ($accessToken !== null && $expiresAt > gmdate('c', time() + 60)) {
+            return $accessToken;
+        }
+
+        $refreshToken = Security::decryptSecret($refreshTokenEnc, $appSecret);
+        if ($refreshToken === null || $refreshToken === '') {
+            return null;
+        }
+
+        $refreshPayload = $this->integrations->refreshGoogleAccessToken($refreshToken);
+        $newAccessToken = (string) ($refreshPayload['access_token'] ?? '');
+        if ($newAccessToken === '') {
+            return null;
+        }
+
+        $expiresIn = (int) ($refreshPayload['expires_in'] ?? 3600);
+        $newAccessTokenEnc = Security::encryptSecret($newAccessToken, $appSecret);
+        if ($newAccessTokenEnc === null) {
+            return null;
+        }
+
+        $newRefreshToken = (string) ($refreshPayload['refresh_token'] ?? '');
+        $newRefreshTokenEnc = $newRefreshToken === '' ? $refreshTokenEnc : Security::encryptSecret($newRefreshToken, $appSecret);
+        if ($newRefreshToken !== '' && $newRefreshTokenEnc === null) {
+            $newRefreshTokenEnc = $refreshTokenEnc;
+        }
+
+        $update = $this->pdo->prepare(
+            'UPDATE user_google_connections
+             SET access_token_enc = :access_token_enc,
+                 refresh_token_enc = :refresh_token_enc,
+                 token_expires_at = :token_expires_at,
+                 updated_at = :updated_at
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':access_token_enc' => $newAccessTokenEnc,
+            ':refresh_token_enc' => $newRefreshTokenEnc,
+            ':token_expires_at' => gmdate('c', time() + max(300, $expiresIn - 60)),
+            ':updated_at' => gmdate('c'),
+            ':id' => (int) $connection['id'],
+        ]);
+
+        return $newAccessToken;
+    }
+
+    private function markReservationCalendarSync(int $reservationId, string $status, ?string $eventId): void
+    {
+        $update = $this->pdo->prepare(
+            'UPDATE reservations
+             SET calendar_sync_status = :status,
+                 google_calendar_event_id = :event_id,
+                 updated_at = :updated_at
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':status' => $status,
+            ':event_id' => $eventId,
+            ':updated_at' => gmdate('c'),
+            ':id' => $reservationId,
+        ]);
+    }
+
+    private function logIntegration(?int $userId, string $channel, string $status, string $target, string $details): void
+    {
+        $insert = $this->pdo->prepare(
+            'INSERT INTO integration_logs (user_id, channel, status, target, details, created_at)
+             VALUES (:user_id, :channel, :status, :target, :details, :created_at)'
+        );
+        $insert->execute([
+            ':user_id' => $userId,
+            ':channel' => $channel,
+            ':status' => $status,
+            ':target' => mb_substr($target, 0, 220),
+            ':details' => mb_substr($details, 0, 5000),
+            ':created_at' => gmdate('c'),
+        ]);
+    }
+
+    private function renderOauthResultPage(bool $ok, string $message): void
+    {
+        $title = $ok ? 'Google vinculado' : 'Error de vinculacion';
+        $safeTitle = Security::e($title);
+        $safeMessage = Security::e($message);
+        $safeColor = $ok ? '#0f8a56' : '#b83849';
+
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            . '<title>' . $safeTitle . '</title></head><body style="font-family:Segoe UI,Arial,sans-serif;background:#f1f6fb;margin:0;">'
+            . '<div style="max-width:680px;margin:40px auto;background:#fff;border:1px solid #d8e3ec;border-radius:16px;padding:24px;">'
+            . '<h1 style="margin-top:0;color:' . $safeColor . ';">' . $safeTitle . '</h1>'
+            . '<p style="color:#173349;font-size:16px;line-height:1.5;">' . $safeMessage . '</p>'
+            . '<p style="color:#4b6273;font-size:14px;">Puedes cerrar esta ventana y volver a Club Agelai.</p>'
+            . '</div></body></html>';
     }
 
     /**

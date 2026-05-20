@@ -86,5 +86,65 @@ final class Security
 
         return $moduleCode;
     }
+
+    /**
+     * Encrypts sensitive values with AES-256-GCM for secure at-rest storage.
+     */
+    public static function encryptSecret(string $plainText, string $appSecret): ?string
+    {
+        if ($plainText === '' || $appSecret === '') {
+            return null;
+        }
+
+        $key = hash('sha256', $appSecret, true);
+        $iv = random_bytes(12);
+        $tag = '';
+
+        $cipherText = openssl_encrypt(
+            $plainText,
+            'aes-256-gcm',
+            $key,
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag
+        );
+
+        if ($cipherText === false || $tag === '') {
+            return null;
+        }
+
+        return base64_encode($iv . $tag . $cipherText);
+    }
+
+    /**
+     * Decrypts values encrypted by encryptSecret.
+     */
+    public static function decryptSecret(string $encodedCipher, string $appSecret): ?string
+    {
+        if ($encodedCipher === '' || $appSecret === '') {
+            return null;
+        }
+
+        $raw = base64_decode($encodedCipher, true);
+        if ($raw === false || strlen($raw) < 28) {
+            return null;
+        }
+
+        $iv = substr($raw, 0, 12);
+        $tag = substr($raw, 12, 16);
+        $cipherText = substr($raw, 28);
+        $key = hash('sha256', $appSecret, true);
+
+        $plainText = openssl_decrypt(
+            $cipherText,
+            'aes-256-gcm',
+            $key,
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag
+        );
+
+        return $plainText === false ? null : $plainText;
+    }
 }
 

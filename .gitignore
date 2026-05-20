@@ -1,0 +1,16 @@
+# Flutter/Dart local cache and generated metadata.
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+
+# Optional local pub cache folder inside project.
+**/.pub/
+
+# IDE and OS local files.
+.vscode/
+.idea/
+*.iml
+Thumbs.db
+Desktop.ini

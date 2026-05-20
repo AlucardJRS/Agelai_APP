@@ -24,6 +24,7 @@ date_default_timezone_set((string) ($config['timezone'] ?? 'UTC'));
 
 require_once __DIR__ . '/Security.php';
 require_once __DIR__ . '/Database.php';
+require_once __DIR__ . '/Integrations.php';
 require_once __DIR__ . '/App.php';
 
 $database = new Database((array) ($config['db'] ?? []));

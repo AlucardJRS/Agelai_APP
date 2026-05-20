@@ -50,7 +50,9 @@ declare(strict_types=1);
                         $paymentLabel = $paymentMethods[$paymentMethodCode] ?? $paymentMethodCode;
                         ?>
                         <strong><?= Security::e($paymentLabel); ?></strong><br>
-                        <small><?= Security::e((string) $reservation['payment_status']); ?></small>
+                        <small><?= Security::e((string) $reservation['payment_status']); ?></small><br>
+                        <small>Email: <?= Security::e((string) ($reservation['confirmation_email_sent_at'] ?? 'pendiente')); ?></small><br>
+                        <small>Calendar: <?= Security::e((string) ($reservation['calendar_sync_status'] ?? '')); ?></small>
                     </td>
                     <td><?= (int) $reservation['occupied_slots']; ?> / <?= (int) $reservation['capacity']; ?></td>
                     <td><small><?= Security::e((string) $reservation['created_at']); ?></small></td>

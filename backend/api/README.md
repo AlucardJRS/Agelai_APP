@@ -12,6 +12,22 @@ $env:AGELAI_DB_USER="root"
 $env:AGELAI_DB_PASS=""
 ```
 
+Configura secreto interno y, si quieres integraciones reales, Google + SMTP:
+
+```powershell
+$env:AGELAI_APP_SECRET="cambia-esta-clave-local-larga-y-unica"
+$env:AGELAI_GOOGLE_CLIENT_ID="tu-client-id.apps.googleusercontent.com"
+$env:AGELAI_GOOGLE_CLIENT_SECRET="tu-client-secret"
+$env:AGELAI_GOOGLE_REDIRECT_URI="http://127.0.0.1:8000/oauth/google/callback"
+$env:AGELAI_SMTP_HOST="smtp.tu-proveedor.com"
+$env:AGELAI_SMTP_PORT="587"
+$env:AGELAI_SMTP_SECURE="tls"
+$env:AGELAI_SMTP_USER="usuario-smtp"
+$env:AGELAI_SMTP_PASS="password-smtp"
+$env:AGELAI_SMTP_FROM_EMAIL="noreply@tu-dominio.com"
+$env:AGELAI_SMTP_FROM_NAME="Club Agelai"
+```
+
 Luego inicia el servidor:
 
 ```powershell
@@ -41,6 +57,9 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 
 - `POST /api/auth/google-login`
 - `GET /api/me`
+- `POST /api/google/connect/start`
+- `GET /api/google/connect/status`
+- `POST /api/google/disconnect`
 - `GET /api/activities`
 - `GET /api/schedule`
 - `POST /api/activities/{id}/reserve`
@@ -49,12 +68,24 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 - `GET /api/reservations`
 - `GET /api/announcements`
 
-## Nota
+## OAuth Callback (Google)
 
-La integracion real con Google OAuth, Google Calendar y correo SMTP se deja para la siguiente fase (produccion).
+- `GET /oauth/google/callback`
+- Debe estar registrado como redirect URI en Google Cloud Console.
+
+## Reservas y Pagos
 
 `POST /api/activities/{id}/reserve` recibe `payment_method` con valores:
 
 - `cash` (efectivo)
 - `bizum`
 - `card` (tarjeta)
+
+Flujo actual:
+
+1. Usuario crea pre-reserva.
+2. Backend envia codigo por SMTP (si esta configurado).
+3. Usuario confirma codigo.
+4. Reserva pasa a `pending_admin_approval`.
+5. Admin aprueba/rechaza en dashboard.
+6. Si aprueba: se envia correo final y se crea evento en Google Calendar si el usuario esta vinculado.

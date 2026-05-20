@@ -169,12 +169,16 @@ final class Database
                     confirmation_deadline VARCHAR(35) DEFAULT NULL,
                     payment_status VARCHAR(40) NOT NULL DEFAULT \'pending\',
                     payment_method VARCHAR(20) NOT NULL DEFAULT \'cash\',
+                    google_calendar_event_id VARCHAR(190) DEFAULT NULL,
+                    calendar_sync_status VARCHAR(30) NOT NULL DEFAULT \'not_linked\',
+                    confirmation_email_sent_at VARCHAR(35) DEFAULT NULL,
                     created_at VARCHAR(35) NOT NULL,
                     updated_at VARCHAR(35) NOT NULL,
                     PRIMARY KEY (id),
                     KEY idx_reservations_user (user_id),
                     KEY idx_reservations_activity_status (activity_id, status),
                     KEY idx_reservations_payment_method (payment_method),
+                    KEY idx_reservations_calendar_sync_status (calendar_sync_status),
                     CONSTRAINT fk_reservations_user
                         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                     CONSTRAINT fk_reservations_activity
@@ -183,22 +187,28 @@ final class Database
             );
 
             // Backward-compatible migration for already-created local databases.
-            $columnExistsQuery = $this->pdo->prepare(
-                'SELECT COUNT(*) AS total
-                 FROM information_schema.COLUMNS
-                 WHERE TABLE_SCHEMA = DATABASE()
-                   AND TABLE_NAME = :table_name
-                   AND COLUMN_NAME = :column_name'
-            );
-            $columnExistsQuery->execute([
-                ':table_name' => 'reservations',
-                ':column_name' => 'payment_method',
-            ]);
-            $columnExists = (int) $columnExistsQuery->fetchColumn() > 0;
-            if (!$columnExists) {
+            if (!$this->columnExists('reservations', 'payment_method')) {
                 $this->pdo->exec(
                     'ALTER TABLE reservations
                      ADD COLUMN payment_method VARCHAR(20) NOT NULL DEFAULT \'cash\' AFTER payment_status'
+                );
+            }
+            if (!$this->columnExists('reservations', 'google_calendar_event_id')) {
+                $this->pdo->exec(
+                    'ALTER TABLE reservations
+                     ADD COLUMN google_calendar_event_id VARCHAR(190) DEFAULT NULL AFTER payment_method'
+                );
+            }
+            if (!$this->columnExists('reservations', 'calendar_sync_status')) {
+                $this->pdo->exec(
+                    'ALTER TABLE reservations
+                     ADD COLUMN calendar_sync_status VARCHAR(30) NOT NULL DEFAULT \'not_linked\' AFTER google_calendar_event_id'
+                );
+            }
+            if (!$this->columnExists('reservations', 'confirmation_email_sent_at')) {
+                $this->pdo->exec(
+                    'ALTER TABLE reservations
+                     ADD COLUMN confirmation_email_sent_at VARCHAR(35) DEFAULT NULL AFTER calendar_sync_status'
                 );
             }
 
@@ -236,6 +246,54 @@ final class Database
             );
 
             $this->pdo->exec(
+                'CREATE TABLE IF NOT EXISTS user_google_connections (
+                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                    user_id BIGINT UNSIGNED NOT NULL,
+                    google_email VARCHAR(190) DEFAULT NULL,
+                    access_token_enc TEXT NOT NULL,
+                    refresh_token_enc TEXT DEFAULT NULL,
+                    scope TEXT DEFAULT NULL,
+                    token_expires_at VARCHAR(35) NOT NULL,
+                    created_at VARCHAR(35) NOT NULL,
+                    updated_at VARCHAR(35) NOT NULL,
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uniq_user_google_connections_user (user_id),
+                    KEY idx_user_google_connections_expires (token_expires_at),
+                    CONSTRAINT fk_user_google_connections_user
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+
+            $this->pdo->exec(
+                'CREATE TABLE IF NOT EXISTS google_oauth_states (
+                    state_token CHAR(64) NOT NULL,
+                    user_id BIGINT UNSIGNED NOT NULL,
+                    expires_at VARCHAR(35) NOT NULL,
+                    used_at VARCHAR(35) DEFAULT NULL,
+                    created_at VARCHAR(35) NOT NULL,
+                    PRIMARY KEY (state_token),
+                    KEY idx_google_oauth_states_user (user_id),
+                    CONSTRAINT fk_google_oauth_states_user
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+
+            $this->pdo->exec(
+                'CREATE TABLE IF NOT EXISTS integration_logs (
+                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                    user_id BIGINT UNSIGNED DEFAULT NULL,
+                    channel VARCHAR(30) NOT NULL,
+                    status VARCHAR(20) NOT NULL,
+                    target VARCHAR(220) NOT NULL,
+                    details TEXT DEFAULT NULL,
+                    created_at VARCHAR(35) NOT NULL,
+                    PRIMARY KEY (id),
+                    KEY idx_integration_logs_user (user_id),
+                    KEY idx_integration_logs_channel_status (channel, status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+
+            $this->pdo->exec(
                 'CREATE TABLE IF NOT EXISTS rate_limits (
                     key_name VARCHAR(255) NOT NULL,
                     window_started_at INT UNSIGNED NOT NULL,
@@ -249,6 +307,23 @@ final class Database
         } catch (\Throwable $exception) {
             throw $exception;
         }
+    }
+
+    private function columnExists(string $tableName, string $columnName): bool
+    {
+        $query = $this->pdo->prepare(
+            'SELECT COUNT(*) AS total
+             FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name
+               AND COLUMN_NAME = :column_name'
+        );
+        $query->execute([
+            ':table_name' => $tableName,
+            ':column_name' => $columnName,
+        ]);
+
+        return (int) $query->fetchColumn() > 0;
     }
 
     /**
