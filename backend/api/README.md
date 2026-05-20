@@ -26,6 +26,11 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 - `GET /dashboard`
 - `GET /dashboard/users`
 - `POST /dashboard/users/update`
+- `POST /dashboard/users/create`
+- `POST /dashboard/users/block`
+- `POST /dashboard/users/deactivate`
+- `POST /dashboard/users/reset-password`
+- `POST /dashboard/users/delete`
 - `GET /dashboard/activities`
 - `GET /dashboard/schedule`
 - `POST /dashboard/activities/create`
@@ -41,6 +46,7 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 - `POST /api/auth/google-login/start`
 - `GET /api/auth/google-login/status?state=...`
 - `POST /api/auth/google-login` (fallback legacy local)
+- `POST /api/auth/local-login` (username/password local)
 - `GET /api/me`
 - `POST /api/google/connect/start`
 - `GET /api/google/connect/status`
@@ -74,3 +80,12 @@ Flujo actual:
 4. Reserva pasa a `pending_admin_approval`.
 5. Admin aprueba/rechaza en dashboard.
 6. Si aprueba: se envia correo final y se crea evento en Google Calendar si el usuario esta vinculado.
+
+## Usuario local de pruebas
+
+En local, al arrancar backend se crea automaticamente (si no existe):
+
+- `username`: `clubagelai`
+- `password`: `clubagelai`
+
+Puedes cambiar este seed en `backend/api/config.php` (`local_user_seed`).

@@ -111,11 +111,15 @@ final class Database
                     google_id VARCHAR(128) NOT NULL,
                     email VARCHAR(180) NOT NULL,
                     full_name VARCHAR(120) NOT NULL,
+                    username VARCHAR(60) DEFAULT NULL,
+                    password_hash VARCHAR(255) DEFAULT NULL,
+                    auth_provider VARCHAR(20) NOT NULL DEFAULT \'google\',
                     status VARCHAR(20) NOT NULL DEFAULT \'pending\',
                     created_at VARCHAR(35) NOT NULL,
                     PRIMARY KEY (id),
                     UNIQUE KEY uniq_users_google_id (google_id),
-                    UNIQUE KEY uniq_users_email (email)
+                    UNIQUE KEY uniq_users_email (email),
+                    UNIQUE KEY uniq_users_username (username)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
 
@@ -211,6 +215,51 @@ final class Database
                      ADD COLUMN confirmation_email_sent_at VARCHAR(35) DEFAULT NULL AFTER calendar_sync_status'
                 );
             }
+
+            // Backward-compatible migration for local credentials on users table.
+            if (!$this->columnExists('users', 'username')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN username VARCHAR(60) DEFAULT NULL AFTER full_name'
+                );
+            }
+            if (!$this->columnExists('users', 'password_hash')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN password_hash VARCHAR(255) DEFAULT NULL AFTER username'
+                );
+            }
+            if (!$this->columnExists('users', 'auth_provider')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN auth_provider VARCHAR(20) NOT NULL DEFAULT \'google\' AFTER password_hash'
+                );
+            }
+            if (!$this->indexExists('users', 'uniq_users_username')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD UNIQUE KEY uniq_users_username (username)'
+                );
+            }
+
+            // Keep auth_provider consistent for existing records after migration.
+            $this->pdo->exec(
+                'UPDATE users
+                 SET auth_provider = CASE
+                    WHEN username IS NOT NULL
+                      AND username <> \'\'
+                      AND password_hash IS NOT NULL
+                      AND password_hash <> \'\'
+                      AND google_id LIKE \'manual_local_%\'
+                    THEN \'local\'
+                    WHEN username IS NOT NULL
+                      AND username <> \'\'
+                      AND password_hash IS NOT NULL
+                      AND password_hash <> \'\'
+                    THEN \'hybrid\'
+                    ELSE \'google\'
+                 END'
+            );
 
             $this->pdo->exec(
                 'CREATE TABLE IF NOT EXISTS announcements (
@@ -325,6 +374,7 @@ final class Database
 
             $this->seedModules((array) ($config['allowed_modules'] ?? []));
             $this->seedAdmin((array) ($config['admin_seed'] ?? []));
+            $this->seedLocalUser((array) ($config['local_user_seed'] ?? []));
         } catch (\Throwable $exception) {
             throw $exception;
         }
@@ -342,6 +392,23 @@ final class Database
         $query->execute([
             ':table_name' => $tableName,
             ':column_name' => $columnName,
+        ]);
+
+        return (int) $query->fetchColumn() > 0;
+    }
+
+    private function indexExists(string $tableName, string $indexName): bool
+    {
+        $query = $this->pdo->prepare(
+            'SELECT COUNT(*) AS total
+             FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name
+               AND INDEX_NAME = :index_name'
+        );
+        $query->execute([
+            ':table_name' => $tableName,
+            ':index_name' => $indexName,
         ]);
 
         return (int) $query->fetchColumn() > 0;
@@ -382,6 +449,70 @@ final class Database
         $insert->execute([
             ':username' => $username,
             ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+            ':created_at' => gmdate('c'),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $localUserSeed
+     */
+    private function seedLocalUser(array $localUserSeed): void
+    {
+        $username = trim((string) ($localUserSeed['username'] ?? 'clubagelai'));
+        $password = (string) ($localUserSeed['password'] ?? 'clubagelai');
+        $fullName = trim((string) ($localUserSeed['full_name'] ?? 'Club Agelai Usuario Pruebas'));
+        $email = trim((string) ($localUserSeed['email'] ?? 'clubagelai@local.agelai'));
+        $status = trim((string) ($localUserSeed['status'] ?? 'pending'));
+
+        if (!preg_match('/^[A-Za-z0-9._-]{4,60}$/', $username)) {
+            return;
+        }
+        if (strlen($password) < 8 || strlen($password) > 72) {
+            return;
+        }
+        if ($fullName === '' || mb_strlen($fullName) > 120) {
+            return;
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+        if (!in_array($status, ['pending', 'active', 'blocked'], true)) {
+            $status = 'pending';
+        }
+
+        $googleId = 'manual_local_seed_' . $username;
+        if (mb_strlen($googleId) > 128) {
+            $googleId = 'manual_local_seed_' . substr(hash('sha256', $username), 0, 24);
+        }
+
+        $query = $this->pdo->prepare(
+            'SELECT id
+             FROM users
+             WHERE username = :username
+                OR email = :email
+             LIMIT 1'
+        );
+        $query->execute([
+            ':username' => $username,
+            ':email' => $email,
+        ]);
+        $exists = $query->fetch();
+        if ($exists !== false) {
+            return;
+        }
+
+        $insert = $this->pdo->prepare(
+            'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
+             VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
+        );
+        $insert->execute([
+            ':google_id' => $googleId,
+            ':email' => $email,
+            ':full_name' => $fullName,
+            ':username' => $username,
+            ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+            ':auth_provider' => 'local',
+            ':status' => $status,
             ':created_at' => gmdate('c'),
         ]);
     }

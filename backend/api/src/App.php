@@ -61,6 +61,7 @@ final class App
         if (
             ($path === '/api/auth/google-login' && $method === 'POST')
             || ($path === '/api/auth/google-login/start' && $method === 'POST')
+            || ($path === '/api/auth/local-login' && $method === 'POST')
             || ($path === '/dashboard/login' && $method === 'POST')
             || str_starts_with($path, '/api/reservations/')
         ) {
@@ -150,6 +151,11 @@ final class App
 
         if ($method === 'POST' && $path === '/api/auth/google-login') {
             $this->apiGoogleLogin();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/api/auth/local-login') {
+            $this->apiLocalLogin();
             return;
         }
 
@@ -271,6 +277,16 @@ final class App
 
         if ($method === 'POST' && $path === '/dashboard/users/deactivate') {
             $this->dashboardUsersDeactivate();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/users/reset-password') {
+            $this->dashboardUsersResetPassword();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/users/delete') {
+            $this->dashboardUsersDelete();
             return;
         }
 
@@ -396,7 +412,23 @@ final class App
     private function dashboardUsers(): void
     {
         $moduleRows = $this->pdo->query('SELECT id, code, name FROM modules ORDER BY name ASC')->fetchAll();
-        $usersRaw = $this->pdo->query('SELECT id, full_name, email, google_id, status, created_at FROM users ORDER BY created_at DESC')->fetchAll();
+        $usersRaw = $this->pdo->query(
+            'SELECT
+                id,
+                full_name,
+                email,
+                google_id,
+                username,
+                auth_provider,
+                status,
+                created_at,
+                CASE
+                    WHEN password_hash IS NULL OR password_hash = \'\' THEN 0
+                    ELSE 1
+                END AS has_local_password
+             FROM users
+             ORDER BY created_at DESC'
+        )->fetchAll();
 
         $moduleStmt = $this->pdo->prepare(
             'SELECT m.id, m.code, m.name
@@ -433,6 +465,7 @@ final class App
         $fullName = trim((string) ($_POST['full_name'] ?? ''));
         $email = trim((string) ($_POST['email'] ?? ''));
         $googleIdInput = trim((string) ($_POST['google_id'] ?? ''));
+        $usernameInput = trim((string) ($_POST['username'] ?? ''));
         $status = (string) ($_POST['status'] ?? 'pending');
         $moduleIdsRaw = $_POST['module_ids'] ?? [];
         $allowedStatus = ['pending', 'active', 'blocked'];
@@ -457,6 +490,11 @@ final class App
             header('Location: /dashboard/users');
             return;
         }
+        if ($usernameInput !== '' && !preg_match('/^[A-Za-z0-9._-]{4,60}$/', $usernameInput)) {
+            $this->setFlash('error', 'Username invalido. Usa 4-60 caracteres: letras, numeros, punto, guion o guion bajo.');
+            header('Location: /dashboard/users');
+            return;
+        }
         $googleId = $googleIdInput === '' ? 'manual_local_' . bin2hex(random_bytes(8)) : $googleIdInput;
 
         $moduleIds = [];
@@ -476,11 +514,33 @@ final class App
                 $status = 'pending';
             }
 
+            $queryUser = $this->pdo->prepare(
+                'SELECT id, password_hash
+                 FROM users
+                 WHERE id = :id
+                 LIMIT 1'
+            );
+            $queryUser->execute([':id' => $userId]);
+            $currentUser = $queryUser->fetch();
+            if ($currentUser === false) {
+                throw new \RuntimeException('Usuario no encontrado.');
+            }
+            $existingPasswordHash = (string) ($currentUser['password_hash'] ?? '');
+            if ($usernameInput === '' && $existingPasswordHash !== '') {
+                throw new \RuntimeException('No puedes vaciar el username mientras exista password local. Resetea o elimina usuario.');
+            }
+
+            $username = $usernameInput === '' ? null : $usernameInput;
+            $hasLocalCredentials = $username !== null && $existingPasswordHash !== '';
+            $authProvider = $this->resolveAuthProvider($googleId, $hasLocalCredentials);
+
             $updateUser = $this->pdo->prepare(
                 'UPDATE users
                  SET full_name = :full_name,
                      email = :email,
                      google_id = :google_id,
+                     username = :username,
+                     auth_provider = :auth_provider,
                      status = :status
                  WHERE id = :id'
             );
@@ -488,6 +548,8 @@ final class App
                 ':full_name' => $fullName,
                 ':email' => $email,
                 ':google_id' => $googleId,
+                ':username' => $username,
+                ':auth_provider' => $authProvider,
                 ':status' => $status,
                 ':id' => $userId,
             ]);
@@ -513,10 +575,12 @@ final class App
 
             $this->pdo->commit();
         } catch (\Throwable $exception) {
-            $this->pdo->rollBack();
-            $message = 'No se pudo actualizar el usuario.';
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            $message = $exception->getMessage() !== '' ? $exception->getMessage() : 'No se pudo actualizar el usuario.';
             if (str_contains(strtolower($exception->getMessage()), 'duplicate')) {
-                $message = 'No se pudo actualizar: email o Google ID ya existen.';
+                $message = 'No se pudo actualizar: email, Google ID o username ya existen.';
             }
             $this->setFlash('error', $message);
             header('Location: /dashboard/users');
@@ -538,6 +602,8 @@ final class App
         $fullName = trim((string) ($_POST['full_name'] ?? ''));
         $email = trim((string) ($_POST['email'] ?? ''));
         $googleIdInput = trim((string) ($_POST['google_id'] ?? ''));
+        $usernameInput = trim((string) ($_POST['username'] ?? ''));
+        $passwordInput = (string) ($_POST['password'] ?? '');
         $status = (string) ($_POST['status'] ?? 'pending');
         $allowedStatus = ['pending', 'active', 'blocked'];
         $moduleIdsRaw = $_POST['module_ids'] ?? [];
@@ -564,10 +630,29 @@ final class App
             header('Location: /dashboard/users');
             return;
         }
+        if ($usernameInput !== '' && !preg_match('/^[A-Za-z0-9._-]{4,60}$/', $usernameInput)) {
+            $this->setFlash('error', 'Username invalido. Usa 4-60 caracteres: letras, numeros, punto, guion o guion bajo.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if ($usernameInput === '' && $passwordInput !== '') {
+            $this->setFlash('error', 'Si defines password, debes indicar tambien username.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if ($usernameInput !== '' && (strlen($passwordInput) < 8 || strlen($passwordInput) > 72)) {
+            $this->setFlash('error', 'La password local debe tener entre 8 y 72 caracteres.');
+            header('Location: /dashboard/users');
+            return;
+        }
         if ($googleId === '') {
             // Placeholder ID for manual creation; will be replaced when the user logs in with Google.
             $googleId = 'manual_local_' . bin2hex(random_bytes(8));
         }
+        $hasLocalCredentials = $usernameInput !== '' && $passwordInput !== '';
+        $authProvider = $this->resolveAuthProvider($googleId, $hasLocalCredentials);
+        $passwordHash = $hasLocalCredentials ? password_hash($passwordInput, PASSWORD_DEFAULT) : null;
+        $username = $usernameInput === '' ? null : $usernameInput;
 
         $moduleIds = [];
         if (is_array($moduleIdsRaw)) {
@@ -587,13 +672,16 @@ final class App
         $this->pdo->beginTransaction();
         try {
             $insertUser = $this->pdo->prepare(
-                'INSERT INTO users (google_id, email, full_name, status, created_at)
-                 VALUES (:google_id, :email, :full_name, :status, :created_at)'
+                'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
+                 VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
             );
             $insertUser->execute([
                 ':google_id' => $googleId,
                 ':email' => $email,
                 ':full_name' => $fullName,
+                ':username' => $username,
+                ':password_hash' => $passwordHash,
+                ':auth_provider' => $authProvider,
                 ':status' => $status,
                 ':created_at' => gmdate('c'),
             ]);
@@ -617,10 +705,12 @@ final class App
 
             $this->pdo->commit();
         } catch (\Throwable $exception) {
-            $this->pdo->rollBack();
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
             $message = 'No se pudo crear el usuario.';
             if (str_contains(strtolower($exception->getMessage()), 'duplicate')) {
-                $message = 'No se pudo crear: email o Google ID ya existen.';
+                $message = 'No se pudo crear: email, Google ID o username ya existen.';
             }
             $this->setFlash('error', $message);
             header('Location: /dashboard/users');
@@ -703,6 +793,99 @@ final class App
         }
 
         $this->setFlash('success', 'Usuario dado de baja (sin acceso y sin modulos).');
+        header('Location: /dashboard/users');
+    }
+
+    private function dashboardUsersResetPassword(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $userId = (int) ($_POST['user_id'] ?? 0);
+        $newPassword = (string) ($_POST['new_password'] ?? '');
+
+        if ($userId <= 0) {
+            $this->setFlash('error', 'Usuario invalido para reset de password.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if (strlen($newPassword) < 8 || strlen($newPassword) > 72) {
+            $this->setFlash('error', 'La nueva password debe tener entre 8 y 72 caracteres.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $query = $this->pdo->prepare(
+            'SELECT id, username, google_id
+             FROM users
+             WHERE id = :id
+             LIMIT 1'
+        );
+        $query->execute([':id' => $userId]);
+        $user = $query->fetch();
+        if ($user === false) {
+            $this->setFlash('error', 'Usuario no encontrado para reset.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $username = trim((string) ($user['username'] ?? ''));
+        if ($username === '') {
+            $this->setFlash('error', 'Este usuario no tiene username local. Asignalo y luego resetea password.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $authProvider = $this->resolveAuthProvider(
+            (string) ($user['google_id'] ?? ''),
+            true
+        );
+
+        $update = $this->pdo->prepare(
+            'UPDATE users
+             SET password_hash = :password_hash,
+                 auth_provider = :auth_provider
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':password_hash' => password_hash($newPassword, PASSWORD_DEFAULT),
+            ':auth_provider' => $authProvider,
+            ':id' => $userId,
+        ]);
+
+        $this->revokeUserApiTokens($userId);
+        $this->setFlash('success', 'Password local reseteada correctamente. Se cerraron sesiones activas.');
+        header('Location: /dashboard/users');
+    }
+
+    private function dashboardUsersDelete(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $userId = (int) ($_POST['user_id'] ?? 0);
+        if ($userId <= 0) {
+            $this->setFlash('error', 'Usuario invalido para eliminar.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $delete = $this->pdo->prepare('DELETE FROM users WHERE id = :id');
+        $delete->execute([':id' => $userId]);
+
+        if ($delete->rowCount() === 0) {
+            $this->setFlash('error', 'Usuario no encontrado para eliminar.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->setFlash('success', 'Usuario eliminado definitivamente.');
         header('Location: /dashboard/users');
     }
 
@@ -1070,6 +1253,66 @@ final class App
     }
 
     /**
+     * Handles local username/password login for dashboard-created accounts.
+     */
+    private function apiLocalLogin(): void
+    {
+        $payload = Security::jsonBody();
+        $username = trim((string) ($payload['username'] ?? ''));
+        $password = (string) ($payload['password'] ?? '');
+
+        if (!preg_match('/^[A-Za-z0-9._-]{4,60}$/', $username)) {
+            $this->json(['ok' => false, 'message' => 'username invalido'], 422);
+            return;
+        }
+        if ($password === '') {
+            $this->json(['ok' => false, 'message' => 'password obligatoria'], 422);
+            return;
+        }
+
+        $query = $this->pdo->prepare(
+            'SELECT id, password_hash, status
+             FROM users
+             WHERE username = :username
+             LIMIT 1'
+        );
+        $query->execute([':username' => $username]);
+        $userRow = $query->fetch();
+
+        if (
+            $userRow === false
+            || (string) ($userRow['password_hash'] ?? '') === ''
+            || !password_verify($password, (string) $userRow['password_hash'])
+        ) {
+            $this->json(['ok' => false, 'message' => 'Credenciales invalidas'], 401);
+            return;
+        }
+
+        $userId = (int) $userRow['id'];
+        $user = $this->getUserById($userId);
+        if ($user === null) {
+            $this->json(['ok' => false, 'message' => 'Usuario no encontrado'], 500);
+            return;
+        }
+        if ((string) ($user['status'] ?? '') === 'blocked') {
+            $this->json([
+                'ok' => false,
+                'message' => 'Tu cuenta esta bloqueada. Contacta con administracion.',
+            ], 403);
+            return;
+        }
+
+        $token = $this->issueToken($userId);
+        $userModules = $this->getUserModules($userId);
+        $this->json([
+            'ok' => true,
+            'token' => $token,
+            'user' => $this->userPayload($user, $userModules),
+            'message' => count($userModules) === 0 ? 'Perfil pendiente de asignacion por administrador.' : 'Login correcto.',
+        ]);
+    }
+
+    /**
      * Handles pseudo Google login for local testing.
      */
     private function apiGoogleLogin(): void
@@ -1105,26 +1348,50 @@ final class App
 
             if ($userRow === false) {
                 $insert = $this->pdo->prepare(
-                    'INSERT INTO users (google_id, email, full_name, status, created_at)
-                     VALUES (:google_id, :email, :full_name, :status, :created_at)'
+                    'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
+                     VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
                 );
                 $insert->execute([
                     ':google_id' => $googleId,
                     ':email' => $email,
                     ':full_name' => $fullName,
+                    ':username' => null,
+                    ':password_hash' => null,
+                    ':auth_provider' => 'google',
                     ':status' => 'pending',
                     ':created_at' => gmdate('c'),
                 ]);
                 $userId = (int) $this->pdo->lastInsertId();
             } else {
                 $userId = (int) $userRow['id'];
+                $credentialsQuery = $this->pdo->prepare(
+                    'SELECT username, password_hash
+                     FROM users
+                     WHERE id = :id
+                     LIMIT 1'
+                );
+                $credentialsQuery->execute([':id' => $userId]);
+                $credentialsRow = $credentialsQuery->fetch();
+                $hasLocalCredentials = false;
+                if ($credentialsRow !== false) {
+                    $hasLocalCredentials = trim((string) ($credentialsRow['username'] ?? '')) !== ''
+                        && trim((string) ($credentialsRow['password_hash'] ?? '')) !== '';
+                }
+                $authProvider = $this->resolveAuthProvider($googleId, $hasLocalCredentials);
+
                 $update = $this->pdo->prepare(
-                    'UPDATE users SET google_id = :google_id, email = :email, full_name = :full_name WHERE id = :id'
+                    'UPDATE users
+                     SET google_id = :google_id,
+                         email = :email,
+                         full_name = :full_name,
+                         auth_provider = :auth_provider
+                     WHERE id = :id'
                 );
                 $update->execute([
                     ':google_id' => $googleId,
                     ':email' => $email,
                     ':full_name' => $fullName,
+                    ':auth_provider' => $authProvider,
                     ':id' => $userId,
                 ]);
             }
@@ -1619,26 +1886,50 @@ final class App
 
                 if ($userRow === false) {
                     $insert = $this->pdo->prepare(
-                        'INSERT INTO users (google_id, email, full_name, status, created_at)
-                         VALUES (:google_id, :email, :full_name, :status, :created_at)'
+                        'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
+                         VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
                     );
                     $insert->execute([
                         ':google_id' => $googleId,
                         ':email' => $email,
                         ':full_name' => $fullName,
+                        ':username' => null,
+                        ':password_hash' => null,
+                        ':auth_provider' => 'google',
                         ':status' => 'pending',
                         ':created_at' => gmdate('c'),
                     ]);
                     $userId = (int) $this->pdo->lastInsertId();
                 } else {
                     $userId = (int) $userRow['id'];
+                    $credentialsQuery = $this->pdo->prepare(
+                        'SELECT username, password_hash
+                         FROM users
+                         WHERE id = :id
+                         LIMIT 1'
+                    );
+                    $credentialsQuery->execute([':id' => $userId]);
+                    $credentialsRow = $credentialsQuery->fetch();
+                    $hasLocalCredentials = false;
+                    if ($credentialsRow !== false) {
+                        $hasLocalCredentials = trim((string) ($credentialsRow['username'] ?? '')) !== ''
+                            && trim((string) ($credentialsRow['password_hash'] ?? '')) !== '';
+                    }
+                    $authProvider = $this->resolveAuthProvider($googleId, $hasLocalCredentials);
+
                     $updateUser = $this->pdo->prepare(
-                        'UPDATE users SET google_id = :google_id, email = :email, full_name = :full_name WHERE id = :id'
+                        'UPDATE users
+                         SET google_id = :google_id,
+                             email = :email,
+                             full_name = :full_name,
+                             auth_provider = :auth_provider
+                         WHERE id = :id'
                     );
                     $updateUser->execute([
                         ':google_id' => $googleId,
                         ':email' => $email,
                         ':full_name' => $fullName,
+                        ':auth_provider' => $authProvider,
                         ':id' => $userId,
                     ]);
                 }
@@ -2730,7 +3021,7 @@ final class App
         $tokenHash = hash('sha256', $rawToken);
 
         $query = $this->pdo->prepare(
-            'SELECT u.id, u.google_id, u.email, u.full_name, u.status
+            'SELECT u.id, u.google_id, u.email, u.full_name, u.username, u.auth_provider, u.status
              FROM api_tokens t
              INNER JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = :token_hash
@@ -2784,7 +3075,7 @@ final class App
     private function getUserById(int $userId): ?array
     {
         $query = $this->pdo->prepare(
-            'SELECT id, google_id, email, full_name, status
+            'SELECT id, google_id, email, full_name, username, auth_provider, status
              FROM users
              WHERE id = :id
              LIMIT 1'
@@ -2822,6 +3113,8 @@ final class App
             'google_id' => (string) $user['google_id'],
             'email' => (string) $user['email'],
             'full_name' => (string) $user['full_name'],
+            'username' => (string) ($user['username'] ?? ''),
+            'auth_provider' => (string) ($user['auth_provider'] ?? 'google'),
             'status' => (string) $user['status'],
             'modules' => array_map(
                 static fn (array $module): array => [
@@ -2885,6 +3178,23 @@ final class App
     {
         $delete = $this->pdo->prepare('DELETE FROM api_tokens WHERE user_id = :user_id');
         $delete->execute([':user_id' => $userId]);
+    }
+
+    private function resolveAuthProvider(string $googleId, bool $hasLocalCredentials): string
+    {
+        $hasRealGoogleIdentity = !$this->isManualLocalGoogleId($googleId);
+        if ($hasLocalCredentials && $hasRealGoogleIdentity) {
+            return 'hybrid';
+        }
+        if ($hasLocalCredentials) {
+            return 'local';
+        }
+        return 'google';
+    }
+
+    private function isManualLocalGoogleId(string $googleId): bool
+    {
+        return str_starts_with($googleId, 'manual_local_');
     }
 
     private function count(string $sql): int

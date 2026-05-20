@@ -32,6 +32,13 @@ Este repositorio arranca desde cero para construir:
 - Metodos de pago iniciales: efectivo, Bizum y tarjeta.
 - Sedes activas: Cala d'Or (principal) y Cala Egos.
 
+## Acceso Local de Pruebas
+
+- Admin dashboard inicial: `admin / Admin12345!`
+- Usuario app local inicial: `clubagelai / clubagelai`
+
+Desde el dashboard puedes editar nombre, permisos/modulos, resetear password local, bloquear/desactivar y eliminar usuarios.
+
 ## Siguiente Paso
 
 Revisa [docs/setup_local.md](C:\Users\mtrfu\Documents\Agelai_Dietas\docs\setup_local.md) para arrancar el entorno.

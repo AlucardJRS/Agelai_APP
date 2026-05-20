@@ -63,6 +63,11 @@ Credenciales admin iniciales:
 - usuario: `admin`
 - password: `Admin12345!`
 
+Usuario local de pruebas (clientes app):
+
+- username: `clubagelai`
+- password: `clubagelai`
+
 Las tablas se crean automaticamente al primer arranque.
 
 ## 6) Iniciar App Flutter Android
@@ -94,6 +99,7 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
    - `Cala d'Or (rotonda Farash)` (principal)
    - `Cala Egos (delante del SYP)`
 3. En la app Flutter pulsa **Entrar con Google** y completa tus credenciales reales.
+   - Alternativa de pruebas: **Entrar con usuario local** (`clubagelai`).
 4. Veras estado pendiente de perfil si aun no tienes modulos.
 5. En dashboard, asigna modulos y estado `active`.
 6. En app, abre **Perfil** y pulsa **Vincular Google** para autorizar Calendar.
@@ -109,6 +115,7 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 - Consultas preparadas con PDO (mitigacion SQL injection).
 - CSRF token en formularios del dashboard.
 - Hash de password admin (`password_hash`).
+- Hash de password para usuarios locales (`password_hash`).
 - Tokens API hasheados en base de datos.
 - Cabeceras HTTP de seguridad.
 - Limitador de peticiones por IP/ruta.

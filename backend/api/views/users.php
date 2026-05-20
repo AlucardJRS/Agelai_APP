@@ -12,8 +12,8 @@ declare(strict_types=1);
 <section class="card">
     <h2>Crear Usuario Desde Dashboard</h2>
     <p class="small-note">
-        Si no conoces el Google ID, dejalo vacio. El sistema creara un ID provisional.
-        Luego puedes vincular el Google ID real desde la tabla de usuarios.
+        Puedes crear usuarios locales con username/password, usuarios Google o mixtos.
+        Si dejas Google ID vacio, el sistema usara un ID provisional.
     </p>
     <form method="post" action="/dashboard/users/create" class="form-grid">
         <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
@@ -31,6 +31,16 @@ declare(strict_types=1);
         <label>
             Google ID (opcional)
             <input type="text" name="google_id" maxlength="128" placeholder="Opcional">
+        </label>
+
+        <label>
+            Username local (opcional)
+            <input type="text" name="username" maxlength="60" placeholder="Ejemplo: cliente01">
+        </label>
+
+        <label>
+            Password local (opcional)
+            <input type="password" name="password" minlength="8" maxlength="72" placeholder="Minimo 8 caracteres">
         </label>
 
         <label>
@@ -84,18 +94,33 @@ declare(strict_types=1);
                 );
                 $googleId = (string) $user['google_id'];
                 $isManual = str_starts_with($googleId, 'manual_local_');
+                $username = trim((string) ($user['username'] ?? ''));
+                $authProvider = (string) ($user['auth_provider'] ?? 'google');
+                $hasLocalPassword = (int) ($user['has_local_password'] ?? 0) === 1;
                 ?>
                 <tr>
                     <td>
                         <strong><?= Security::e((string) $user['full_name']); ?></strong><br>
-                        <small><?= Security::e((string) $user['email']); ?></small>
+                        <small><?= Security::e((string) $user['email']); ?></small><br>
+                        <?php if ($username === ''): ?>
+                            <small>Sin username local</small>
+                        <?php else: ?>
+                            <small>Username: <code><?= Security::e($username); ?></code></small>
+                        <?php endif; ?>
                     </td>
                     <td><code><?= Security::e($googleId); ?></code></td>
                     <td>
-                        <?php if ($isManual): ?>
-                            <span class="tag tag-pending">Manual dashboard</span>
+                        <?php if ($authProvider === 'local'): ?>
+                            <span class="tag">Local</span>
+                        <?php elseif ($authProvider === 'hybrid'): ?>
+                            <span class="tag">Google + Local</span>
+                        <?php elseif ($isManual): ?>
+                            <span class="tag tag-pending">Manual pendiente Google</span>
                         <?php else: ?>
                             <span class="tag">Google OAuth</span>
+                        <?php endif; ?>
+                        <?php if ($hasLocalPassword): ?>
+                            <span class="tag">Password OK</span>
                         <?php endif; ?>
                     </td>
                     <td><?= Security::e((string) $user['status']); ?></td>
@@ -126,6 +151,11 @@ declare(strict_types=1);
                             <label class="inline-label">
                                 Google ID
                                 <input type="text" name="google_id" value="<?= Security::e($googleId); ?>" maxlength="128">
+                            </label>
+
+                            <label class="inline-label">
+                                Username
+                                <input type="text" name="username" value="<?= Security::e($username); ?>" maxlength="60">
                             </label>
 
                             <label class="inline-label">
@@ -166,6 +196,20 @@ declare(strict_types=1);
                             <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
                             <input type="hidden" name="user_id" value="<?= (int) $user['id']; ?>">
                             <button type="submit" class="button button-small button-secondary">Dar de baja</button>
+                        </form>
+                        <form method="post" action="/dashboard/users/reset-password" class="inline-form">
+                            <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
+                            <input type="hidden" name="user_id" value="<?= (int) $user['id']; ?>">
+                            <label class="inline-label">
+                                Nueva password
+                                <input type="password" name="new_password" minlength="8" maxlength="72" placeholder="Reset password local">
+                            </label>
+                            <button type="submit" class="button button-small">Reset password</button>
+                        </form>
+                        <form method="post" action="/dashboard/users/delete" class="inline-form" onsubmit="return confirm('Se eliminara el usuario y sus reservas. ¿Continuar?');">
+                            <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
+                            <input type="hidden" name="user_id" value="<?= (int) $user['id']; ?>">
+                            <button type="submit" class="button button-small button-danger">Eliminar usuario</button>
                         </form>
                     </td>
                 </tr>

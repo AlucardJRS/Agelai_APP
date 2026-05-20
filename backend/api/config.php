@@ -24,6 +24,13 @@ return [
         'username' => 'admin',
         'password' => 'Admin12345!',
     ],
+    'local_user_seed' => [
+        'username' => 'clubagelai',
+        'password' => 'clubagelai',
+        'full_name' => 'Club Agelai Usuario Pruebas',
+        'email' => 'clubagelai@local.agelai',
+        'status' => 'pending',
+    ],
     'token_ttl_hours' => 24,
     'reservation_cancellation_hours' => 2,
     'require_admin_approval_for_all_reservations' => true,

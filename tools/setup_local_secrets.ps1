@@ -9,7 +9,12 @@ function Convert-SecureToPlainText {
 
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureValue)
     try {
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        if ($null -eq $value) {
+            # Empty SecureString can come back as null; normalize to empty text.
+            return ""
+        }
+        return $value
     } finally {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }

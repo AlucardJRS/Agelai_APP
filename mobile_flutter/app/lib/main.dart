@@ -115,6 +115,52 @@ class _SessionGateState extends State<SessionGate> {
     }
   }
 
+  /// Allows local username/password login for dashboard-created users.
+  Future<void> _loginWithLocal({
+    required String username,
+    required String password,
+  }) async {
+    if (username.isEmpty || password.isEmpty) {
+      setState(() {
+        _errorMessage = 'Introduce username y password local.';
+      });
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final Map<String, dynamic> result = await _apiClient.localLogin(
+        username: username,
+        password: password,
+      );
+      final String token = result['token'] as String? ?? '';
+      if (token.isEmpty) {
+        throw ApiException('No se recibio token de sesion.');
+      }
+      _apiClient.setToken(token);
+      setState(() {
+        _token = token;
+      });
+      await _reloadData();
+    } on ApiException catch (error) {
+      setState(() {
+        _errorMessage = error.message;
+      });
+    } catch (_) {
+      setState(() {
+        _errorMessage = 'No se pudo iniciar sesion local.';
+      });
+    } finally {
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
+
   /// Polls backend for completion of OAuth Google login.
   Future<void> _pollGoogleLoginStatus(String state) async {
     for (int attempt = 0; attempt < 18; attempt++) {
@@ -633,6 +679,7 @@ class _SessionGateState extends State<SessionGate> {
         isLoading: _loading,
         errorMessage: _errorMessage,
         onLoginWithGoogle: _loginWithGoogle,
+        onLoginWithLocal: _loginWithLocal,
       );
     }
 
@@ -742,18 +789,39 @@ class _SessionGateState extends State<SessionGate> {
   }
 }
 
-/// Login screen using real Google OAuth flow.
-class LoginScreen extends StatelessWidget {
+/// Login screen supporting both Google OAuth and local test users.
+class LoginScreen extends StatefulWidget {
   const LoginScreen({
     required this.isLoading,
     required this.errorMessage,
     required this.onLoginWithGoogle,
+    required this.onLoginWithLocal,
     super.key,
   });
 
   final bool isLoading;
   final String? errorMessage;
   final Future<void> Function() onLoginWithGoogle;
+  final Future<void> Function({
+    required String username,
+    required String password,
+  })
+  onLoginWithLocal;
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -790,12 +858,10 @@ class LoginScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 6),
-                    const Text(
-                      'Acceso seguro con tu cuenta Google.',
-                    ),
+                    const Text('Acceso con Google o con cuenta local.'),
                     const SizedBox(height: 16),
                     FilledButton.icon(
-                      onPressed: isLoading ? null : onLoginWithGoogle,
+                      onPressed: widget.isLoading ? null : widget.onLoginWithGoogle,
                       icon: const Icon(Icons.login),
                       label: const Text('Entrar con Google'),
                     ),
@@ -803,10 +869,57 @@ class LoginScreen extends StatelessWidget {
                     const Text(
                       'Se abrira Google para que introduzcas tus credenciales.',
                     ),
-                    if (errorMessage != null) ...<Widget>[
+                    const SizedBox(height: 14),
+                    const Divider(),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Acceso local de pruebas',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _usernameController,
+                      enabled: !widget.isLoading,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        labelText: 'Username',
+                        hintText: 'clubagelai',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _passwordController,
+                      enabled: !widget.isLoading,
+                      obscureText: true,
+                      textInputAction: TextInputAction.done,
+                      decoration: const InputDecoration(
+                        labelText: 'Password',
+                        hintText: 'Tu password local',
+                      ),
+                      onSubmitted: (_) async {
+                        await widget.onLoginWithLocal(
+                          username: _usernameController.text.trim(),
+                          password: _passwordController.text,
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      onPressed: widget.isLoading
+                          ? null
+                          : () async {
+                              await widget.onLoginWithLocal(
+                                username: _usernameController.text.trim(),
+                                password: _passwordController.text,
+                              );
+                            },
+                      icon: const Icon(Icons.vpn_key),
+                      label: const Text('Entrar con usuario local'),
+                    ),
+                    if (widget.errorMessage != null) ...<Widget>[
                       const SizedBox(height: 12),
                       Text(
-                        errorMessage!,
+                        widget.errorMessage!,
                         style: TextStyle(color: Colors.red.shade800),
                       ),
                     ],
@@ -1323,6 +1436,20 @@ class ApiClient {
         method: 'GET',
         path: '/api/auth/google-login/status?state=$state',
         authRequired: false,
+      );
+
+  Future<Map<String, dynamic>> localLogin({
+    required String username,
+    required String password,
+  }) =>
+      _request(
+        method: 'POST',
+        path: '/api/auth/local-login',
+        authRequired: false,
+        body: <String, dynamic>{
+          'username': username,
+          'password': password,
+        },
       );
 
   Future<Map<String, dynamic>> me() => _request(method: 'GET', path: '/api/me');
