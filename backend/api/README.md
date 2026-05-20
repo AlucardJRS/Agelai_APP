@@ -35,6 +35,8 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 - `GET /dashboard/schedule`
 - `POST /dashboard/activities/create`
 - `POST /dashboard/activities/toggle`
+- `POST /dashboard/activities/update`
+- `POST /dashboard/activities/delete`
 - `GET /dashboard/reservations`
 - `POST /dashboard/reservations/approve`
 - `POST /dashboard/reservations/reject`

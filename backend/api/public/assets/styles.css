@@ -272,6 +272,20 @@ textarea:focus {
     max-width: 240px;
 }
 
+/* Wider notes field improves readability when editing long activity comments. */
+.activity-notes-label {
+    min-width: 240px;
+    max-width: 360px;
+}
+
+/* Disabled destructive buttons remain visible but clearly non-interactive. */
+button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+    filter: grayscale(0.15);
+}
+
 /* Dashed fieldset boundary distinguishes grouped module options. */
 .module-fieldset {
     border: 1px dashed #bad0e0;

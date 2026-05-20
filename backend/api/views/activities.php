@@ -89,18 +89,22 @@ declare(strict_types=1);
             $capacity = (int) $activity['capacity'];
             $occupied = (int) $activity['occupied_slots'];
             $remaining = max(0, $capacity - $occupied);
+            $totalReservations = (int) ($activity['total_reservations'] ?? 0);
             $status = (string) $activity['status'];
             ?>
             <tr>
                 <td><?= (int) $activity['id']; ?></td>
                 <td>
                     <strong><?= Security::e((string) $activity['title']); ?></strong><br>
-                    <small><?= Security::e((string) $activity['location']); ?></small>
+                    <small><?= Security::e((string) $activity['location']); ?></small><br>
+                    <?php if (trim((string) ($activity['notes'] ?? '')) !== ''): ?>
+                        <small><?= Security::e((string) $activity['notes']); ?></small>
+                    <?php endif; ?>
                 </td>
                 <td><?= Security::e((string) $activity['module_code']); ?></td>
                 <td>
-                    <small>Inicio:</small> <?= Security::e((string) $activity['starts_at']); ?><br>
-                    <small>Fin:</small> <?= Security::e((string) $activity['ends_at']); ?>
+                    <small>Inicio:</small> <?= Security::e((string) ($activity['starts_at_local_label'] ?? $activity['starts_at'])); ?><br>
+                    <small>Fin:</small> <?= Security::e((string) ($activity['ends_at_local_label'] ?? $activity['ends_at'])); ?>
                 </td>
                 <td>
                     <?= $occupied; ?> / <?= $capacity; ?><br>
@@ -108,6 +112,65 @@ declare(strict_types=1);
                 </td>
                 <td><?= Security::e($status); ?></td>
                 <td>
+                    <form method="post" action="/dashboard/activities/update" class="inline-form">
+                        <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
+                        <input type="hidden" name="activity_id" value="<?= (int) $activity['id']; ?>">
+
+                        <label class="inline-label">
+                            Titulo
+                            <input type="text" name="title" maxlength="120" required value="<?= Security::e((string) $activity['title']); ?>">
+                        </label>
+
+                        <label class="inline-label">
+                            Modulo
+                            <select name="module_code" required>
+                                <?php foreach ($modules as $module): ?>
+                                    <?php $moduleCode = (string) $module['code']; ?>
+                                    <option value="<?= Security::e($moduleCode); ?>" <?= (string) $activity['module_code'] === $moduleCode ? 'selected' : ''; ?>>
+                                        <?= Security::e((string) $module['name']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+
+                        <label class="inline-label">
+                            Inicio
+                            <input type="datetime-local" name="starts_at" required value="<?= Security::e((string) ($activity['starts_at_local_input'] ?? '')); ?>">
+                        </label>
+
+                        <label class="inline-label">
+                            Fin
+                            <input type="datetime-local" name="ends_at" required value="<?= Security::e((string) ($activity['ends_at_local_input'] ?? '')); ?>">
+                        </label>
+
+                        <label class="inline-label">
+                            Cupo
+                            <input type="number" name="capacity" min="<?= $occupied > 1 ? $occupied : 1; ?>" max="500" required value="<?= $capacity; ?>">
+                        </label>
+
+                        <label class="inline-label">
+                            Sede
+                            <select name="location" required>
+                                <?php foreach ($locations as $locationCode => $locationMeta): ?>
+                                    <?php
+                                    $locationName = is_array($locationMeta) && isset($locationMeta['name']) ? (string) $locationMeta['name'] : (string) $locationCode;
+                                    $isPrimary = is_array($locationMeta) && !empty($locationMeta['is_primary']);
+                                    ?>
+                                    <option value="<?= Security::e($locationName); ?>" <?= (string) $activity['location'] === $locationName ? 'selected' : ''; ?>>
+                                        <?= Security::e($locationName); ?><?= $isPrimary ? ' (Principal)' : ''; ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+
+                        <label class="inline-label activity-notes-label">
+                            Notas
+                            <input type="text" name="notes" maxlength="500" value="<?= Security::e((string) $activity['notes']); ?>">
+                        </label>
+
+                        <button type="submit" class="button button-small">Guardar cambios</button>
+                    </form>
+
                     <form method="post" action="/dashboard/activities/toggle" class="inline-form">
                         <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
                         <input type="hidden" name="activity_id" value="<?= (int) $activity['id']; ?>">
@@ -116,6 +179,17 @@ declare(strict_types=1);
                             <?= $status === 'active' ? 'Desactivar' : 'Activar'; ?>
                         </button>
                     </form>
+
+                    <form method="post" action="/dashboard/activities/delete" class="inline-form" onsubmit="return confirm('Se eliminara la actividad. Esta accion no se puede deshacer.');">
+                        <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken); ?>">
+                        <input type="hidden" name="activity_id" value="<?= (int) $activity['id']; ?>">
+                        <button type="submit" class="button button-small button-danger" <?= $totalReservations > 0 ? 'disabled title="No se puede eliminar: tiene reservas asociadas"' : ''; ?>>
+                            Eliminar
+                        </button>
+                    </form>
+                    <?php if ($totalReservations > 0): ?>
+                        <small>Historial de reservas: <?= $totalReservations; ?> (solo desactivar)</small>
+                    <?php endif; ?>
                 </td>
             </tr>
         <?php endforeach; ?>

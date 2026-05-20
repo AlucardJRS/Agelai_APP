@@ -331,6 +331,16 @@ final class App
             return;
         }
 
+        if ($method === 'POST' && $path === '/dashboard/activities/update') {
+            $this->dashboardActivitiesUpdate();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/activities/delete') {
+            $this->dashboardActivitiesDelete();
+            return;
+        }
+
         if ($method === 'GET' && $path === '/dashboard/reservations') {
             $this->dashboardReservations();
             return;
@@ -941,10 +951,25 @@ final class App
                  FROM reservations r
                  WHERE r.activity_id = a.id
                  AND r.status IN (\'pending_user_confirm\', \'pending_admin_approval\', \'confirmed\')
-               ) AS occupied_slots
+               ) AS occupied_slots,
+               (
+                 SELECT COUNT(*)
+                 FROM reservations r2
+                 WHERE r2.activity_id = a.id
+               ) AS total_reservations
              FROM activities a
              ORDER BY a.starts_at ASC'
         )->fetchAll();
+
+        foreach ($activities as &$activity) {
+            $startLocal = $this->toLocalDate((string) ($activity['starts_at'] ?? ''));
+            $endLocal = $this->toLocalDate((string) ($activity['ends_at'] ?? ''));
+            $activity['starts_at_local_label'] = $startLocal === null ? (string) ($activity['starts_at'] ?? '') : $startLocal->format('d/m/Y H:i');
+            $activity['ends_at_local_label'] = $endLocal === null ? (string) ($activity['ends_at'] ?? '') : $endLocal->format('d/m/Y H:i');
+            $activity['starts_at_local_input'] = $startLocal === null ? '' : $startLocal->format('Y-m-d\TH:i');
+            $activity['ends_at_local_input'] = $endLocal === null ? '' : $endLocal->format('Y-m-d\TH:i');
+        }
+        unset($activity);
 
         $this->render('activities', [
             'title' => 'Actividades',
@@ -1015,6 +1040,11 @@ final class App
             header('Location: /dashboard/activities');
             return;
         }
+        if (mb_strlen($notes) > 500) {
+            $this->setFlash('error', 'Las notas no pueden superar 500 caracteres.');
+            header('Location: /dashboard/activities');
+            return;
+        }
 
         $insert = $this->pdo->prepare(
             'INSERT INTO activities (title, module_code, starts_at, ends_at, capacity, location, notes, status, created_at)
@@ -1060,6 +1090,146 @@ final class App
         ]);
 
         $this->setFlash('success', 'Estado de actividad actualizado.');
+        header('Location: /dashboard/activities');
+    }
+
+    private function dashboardActivitiesUpdate(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $activityId = (int) ($_POST['activity_id'] ?? 0);
+        $title = trim((string) ($_POST['title'] ?? ''));
+        $moduleCode = Security::normalizeModuleCode($_POST['module_code'] ?? null, (array) $this->config['allowed_modules']);
+        $startsAt = trim((string) ($_POST['starts_at'] ?? ''));
+        $endsAt = trim((string) ($_POST['ends_at'] ?? ''));
+        $capacity = (int) ($_POST['capacity'] ?? 0);
+        $location = trim((string) ($_POST['location'] ?? ''));
+        $notes = trim((string) ($_POST['notes'] ?? ''));
+        $allowedLocationNames = array_values($this->locationNamesMap());
+
+        if ($activityId <= 0 || $title === '' || mb_strlen($title) > 120 || $moduleCode === null) {
+            $this->setFlash('error', 'Datos principales invalidos para actualizar actividad.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+        if ($capacity < 1 || $capacity > 500) {
+            $this->setFlash('error', 'El cupo debe estar entre 1 y 500.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+        if ($location === '' || mb_strlen($location) > 120 || !in_array($location, $allowedLocationNames, true)) {
+            $this->setFlash('error', 'Ubicacion invalida.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+        if (mb_strlen($notes) > 500) {
+            $this->setFlash('error', 'Las notas no pueden superar 500 caracteres.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $startDate = date_create_immutable($startsAt);
+        $endDate = date_create_immutable($endsAt);
+        if ($startDate === false || $endDate === false || $endDate <= $startDate) {
+            $this->setFlash('error', 'Fechas/horas invalidas.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+        $utcZone = new \DateTimeZone('UTC');
+        $startDateIso = $startDate->setTimezone($utcZone)->format('c');
+        $endDateIso = $endDate->setTimezone($utcZone)->format('c');
+
+        $occupiedQuery = $this->pdo->prepare(
+            'SELECT COUNT(*) AS total
+             FROM reservations
+             WHERE activity_id = :activity_id
+               AND status IN (\'pending_user_confirm\', \'pending_admin_approval\', \'confirmed\')'
+        );
+        $occupiedQuery->execute([':activity_id' => $activityId]);
+        $occupied = (int) $occupiedQuery->fetchColumn();
+        if ($capacity < $occupied) {
+            $this->setFlash('error', 'No puedes reducir el cupo por debajo de plazas ocupadas (' . $occupied . ').');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $update = $this->pdo->prepare(
+            'UPDATE activities
+             SET title = :title,
+                 module_code = :module_code,
+                 starts_at = :starts_at,
+                 ends_at = :ends_at,
+                 capacity = :capacity,
+                 location = :location,
+                 notes = :notes
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':title' => $title,
+            ':module_code' => $moduleCode,
+            ':starts_at' => $startDateIso,
+            ':ends_at' => $endDateIso,
+            ':capacity' => $capacity,
+            ':location' => $location,
+            ':notes' => $notes,
+            ':id' => $activityId,
+        ]);
+
+        if ($update->rowCount() === 0) {
+            $this->setFlash('error', 'Actividad no encontrada o sin cambios.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $this->setFlash('success', 'Actividad actualizada correctamente.');
+        header('Location: /dashboard/activities');
+    }
+
+    private function dashboardActivitiesDelete(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $activityId = (int) ($_POST['activity_id'] ?? 0);
+        if ($activityId <= 0) {
+            $this->setFlash('error', 'Actividad invalida para eliminar.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $reservationsQuery = $this->pdo->prepare(
+            'SELECT COUNT(*) AS total
+             FROM reservations
+             WHERE activity_id = :activity_id'
+        );
+        $reservationsQuery->execute([':activity_id' => $activityId]);
+        $totalReservations = (int) $reservationsQuery->fetchColumn();
+        if ($totalReservations > 0) {
+            $this->setFlash(
+                'error',
+                'No se puede eliminar esta actividad porque tiene reservas asociadas. Puedes desactivarla.'
+            );
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $delete = $this->pdo->prepare('DELETE FROM activities WHERE id = :id');
+        $delete->execute([':id' => $activityId]);
+
+        if ($delete->rowCount() === 0) {
+            $this->setFlash('error', 'Actividad no encontrada para eliminar.');
+            header('Location: /dashboard/activities');
+            return;
+        }
+
+        $this->setFlash('success', 'Actividad eliminada correctamente.');
         header('Location: /dashboard/activities');
     }
 
