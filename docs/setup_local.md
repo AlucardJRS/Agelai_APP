@@ -73,13 +73,13 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 ## 5) Flujo de Prueba Recomendado
 
 1. Inicia sesion en dashboard admin.
-2. Crea actividades con cupos desde **Actividades**.
+2. Crea actividades con cupos y sede (Cala d'Or o Cala Egos) desde **Actividades**.
 3. En la app Flutter, registra un usuario por Google ID local.
 4. Veras estado pendiente de perfil.
 5. En dashboard, asigna modulos y estado `active`.
-6. En app, actualiza y reserva actividad.
+6. En app, actualiza, revisa el tab **Horarios** y reserva actividad.
 7. Confirma codigo de usuario (modo local).
-8. En dashboard, valida la reserva final.
+8. En dashboard, valida manualmente la reserva final.
 
 ## 6) Seguridad Implementada en Esta Version
 
@@ -91,6 +91,7 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 - Limitador de peticiones por IP/ruta.
 - Escapado HTML en vistas (mitigacion XSS).
 - Regla de cancelacion minima de 2 horas.
+- Aprobacion manual admin obligatoria en todas las reservas.
 
 ## 7) Pendiente para Produccion (fase siguiente)
 

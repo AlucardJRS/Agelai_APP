@@ -28,6 +28,7 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 - `GET /dashboard/users`
 - `POST /dashboard/users/update`
 - `GET /dashboard/activities`
+- `GET /dashboard/schedule`
 - `POST /dashboard/activities/create`
 - `POST /dashboard/activities/toggle`
 - `GET /dashboard/reservations`
@@ -41,6 +42,7 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 - `POST /api/auth/google-login`
 - `GET /api/me`
 - `GET /api/activities`
+- `GET /api/schedule`
 - `POST /api/activities/{id}/reserve`
 - `POST /api/reservations/{id}/confirm`
 - `POST /api/reservations/{id}/cancel`
@@ -50,3 +52,9 @@ Nota: al primer arranque se crean automaticamente las tablas en MariaDB.
 ## Nota
 
 La integracion real con Google OAuth, Google Calendar y correo SMTP se deja para la siguiente fase (produccion).
+
+`POST /api/activities/{id}/reserve` recibe `payment_method` con valores:
+
+- `cash` (efectivo)
+- `bizum`
+- `card` (tarjeta)

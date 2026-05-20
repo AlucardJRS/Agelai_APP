@@ -23,6 +23,22 @@ return [
     ],
     'token_ttl_hours' => 24,
     'reservation_cancellation_hours' => 2,
+    'require_admin_approval_for_all_reservations' => true,
+    'payment_methods' => [
+        'cash' => 'Efectivo',
+        'bizum' => 'Bizum',
+        'card' => 'Tarjeta',
+    ],
+    'locations' => [
+        'cala_dor' => [
+            'name' => "Cala d'Or",
+            'is_primary' => true,
+        ],
+        'cala_egos' => [
+            'name' => 'Cala Egos',
+            'is_primary' => false,
+        ],
+    ],
     'allowed_modules' => [
         'martial_arts' => 'Artes Marciales',
         'gym' => 'Musculacion y Gym',

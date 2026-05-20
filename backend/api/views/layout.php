@@ -31,6 +31,7 @@ declare(strict_types=1);
         <a class="<?= $currentPath === '/dashboard' ? 'active' : ''; ?>" href="/dashboard">Inicio</a>
         <a class="<?= $currentPath === '/dashboard/users' ? 'active' : ''; ?>" href="/dashboard/users">Usuarios</a>
         <a class="<?= $currentPath === '/dashboard/activities' ? 'active' : ''; ?>" href="/dashboard/activities">Actividades</a>
+        <a class="<?= $currentPath === '/dashboard/schedule' ? 'active' : ''; ?>" href="/dashboard/schedule">Horarios</a>
         <a class="<?= $currentPath === '/dashboard/reservations' ? 'active' : ''; ?>" href="/dashboard/reservations">Reservas</a>
         <a class="<?= $currentPath === '/dashboard/announcements' ? 'active' : ''; ?>" href="/dashboard/announcements">Anuncios</a>
     </nav>
@@ -47,4 +48,3 @@ declare(strict_types=1);
 </main>
 </body>
 </html>
-

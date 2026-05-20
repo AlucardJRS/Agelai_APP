@@ -4,8 +4,8 @@ declare(strict_types=1);
 <section class="card">
     <h1>Reservas y Validacion Final</h1>
     <p>
-        Flujo previsto: usuario reserva, confirma su codigo y luego validas aqui.
-        Al confirmar, la plaza queda definitiva y bloqueada.
+        Flujo vigente: el usuario reserva, confirma su codigo y luego validas manualmente aqui.
+        La aprobacion admin es obligatoria para todas las reservas.
     </p>
 </section>
 
@@ -40,10 +40,18 @@ declare(strict_types=1);
                     <td>
                         <strong><?= Security::e((string) $reservation['title']); ?></strong><br>
                         <small><?= Security::e((string) $reservation['module_code']); ?></small><br>
-                        <small><?= Security::e((string) $reservation['starts_at']); ?></small>
+                        <small><?= Security::e((string) $reservation['starts_at']); ?></small><br>
+                        <small><?= Security::e((string) $reservation['location']); ?></small>
                     </td>
                     <td><span class="tag"><?= Security::e($status); ?></span></td>
-                    <td><?= Security::e((string) $reservation['payment_status']); ?></td>
+                    <td>
+                        <?php
+                        $paymentMethodCode = (string) ($reservation['payment_method'] ?? 'cash');
+                        $paymentLabel = $paymentMethods[$paymentMethodCode] ?? $paymentMethodCode;
+                        ?>
+                        <strong><?= Security::e($paymentLabel); ?></strong><br>
+                        <small><?= Security::e((string) $reservation['payment_status']); ?></small>
+                    </td>
                     <td><?= (int) $reservation['occupied_slots']; ?> / <?= (int) $reservation['capacity']; ?></td>
                     <td><small><?= Security::e((string) $reservation['created_at']); ?></small></td>
                     <td>
@@ -68,4 +76,3 @@ declare(strict_types=1);
         </table>
     </section>
 <?php endif; ?>
-

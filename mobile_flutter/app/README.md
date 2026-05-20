@@ -14,8 +14,9 @@ flutter run
 
 - Login/registro local con ID de Google simulado
 - Mensaje de perfil pendiente sin modulos asignados
+- Tablon de horarios semanales por sede
 - Vista de actividades segun permisos
-- Reserva con confirmacion de codigo (modo local)
+- Reserva con eleccion de metodo de pago (efectivo/Bizum/tarjeta) y confirmacion de codigo (modo local)
 - Mis reservas con opcion de cancelacion
 - Avisos/promociones publicados desde dashboard web
 
@@ -28,4 +29,3 @@ Definida en:
 Valor por defecto para emulador Android:
 
 - `http://10.0.2.2:8000`
-

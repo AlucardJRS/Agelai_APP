@@ -47,8 +47,18 @@ declare(strict_types=1);
         </label>
 
         <label>
-            Ubicacion
-            <input type="text" name="location" maxlength="120" required placeholder="Sala principal">
+            Sede
+            <select name="location" required>
+                <?php foreach ($locations as $locationCode => $locationMeta): ?>
+                    <?php
+                    $locationName = is_array($locationMeta) && isset($locationMeta['name']) ? (string) $locationMeta['name'] : (string) $locationCode;
+                    $isPrimary = is_array($locationMeta) && !empty($locationMeta['is_primary']);
+                    ?>
+                    <option value="<?= Security::e($locationName); ?>">
+                        <?= Security::e($locationName); ?><?= $isPrimary ? ' (Principal)' : ''; ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
         </label>
 
         <label class="col-span-2">
@@ -112,4 +122,3 @@ declare(strict_types=1);
         </tbody>
     </table>
 </section>
-

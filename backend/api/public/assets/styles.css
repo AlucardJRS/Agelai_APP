@@ -1,281 +1,400 @@
-/* Global reset and baseline typography for dashboard readability. */
+/* Theme tokens centralize colors and spacing for maintainable UI evolution. */
+:root {
+    --bg-deep: #0d1e2b;
+    --bg-mid: #142d3e;
+    --bg-soft: #edf2f7;
+    --brand: #2f84c9;
+    --brand-strong: #0d5c9d;
+    --accent: #ffa830;
+    --success: #0d8f56;
+    --danger: #c13747;
+    --text-main: #102131;
+    --text-soft: #4f6475;
+    --line: #d3e0ea;
+    --card: #ffffff;
+    --radius-lg: 18px;
+    --radius-md: 12px;
+}
+
+/* Base reset guarantees predictable sizing across components. */
 * {
     box-sizing: border-box;
 }
 
-/* Main body theme with soft neutral palette suitable for long admin sessions. */
+/* Body background mixes gradients and soft radial lights for a modern identity. */
 body {
     margin: 0;
-    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(160deg, #f4f6f8 0%, #eaf0f2 100%);
-    color: #18222c;
+    min-height: 100vh;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+    color: var(--text-main);
+    background:
+        radial-gradient(circle at 10% 15%, rgba(89, 171, 239, 0.26), transparent 40%),
+        radial-gradient(circle at 85% 20%, rgba(255, 168, 48, 0.2), transparent 30%),
+        linear-gradient(145deg, #eef3f8 0%, #dde8f1 100%);
 }
 
-/* Top header containing product identity and session actions. */
+/* Header keeps identity and session controls visible with strong contrast. */
 .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    justify-content: space-between;
     gap: 1rem;
     padding: 1rem 1.5rem;
-    background: #10212f;
-    color: #e6eff7;
+    background: linear-gradient(120deg, var(--bg-deep), var(--bg-mid));
+    color: #eef5fb;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.14);
 }
 
-/* Brand block in header. */
+/* Brand stack with uppercase subtitle for a premium dashboard feel. */
 .brand {
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: 0.15rem;
+    letter-spacing: 0.02em;
 }
 
-/* Admin account area in header. */
+/* Admin action area groups identity and logout action compactly. */
 .admin-actions {
     display: flex;
     align-items: center;
     gap: 0.8rem;
 }
 
-/* Small text treatment for admin username and helper notes. */
+/* Supporting text appears muted but still readable on dark background. */
 .admin-label,
 .small-note {
-    font-size: 0.85rem;
-    color: #d4dee8;
+    color: #c9d9e8;
+    font-size: 0.84rem;
 }
 
-/* Horizontal main menu for dashboard sections. */
+/* Main navigation uses pill links and subtle transparency overlays. */
 .menu {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    padding: 0.8rem 1.5rem;
-    background: #193245;
+    gap: 0.45rem;
+    padding: 0.8rem 1.5rem 1rem;
+    background: linear-gradient(120deg, #112637, #18344a);
 }
 
-/* Menu links with clear active and hover states. */
+/* Menu links stay highly legible and animated on interaction. */
 .menu a {
     text-decoration: none;
-    color: #e2edf5;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #eaf4fc;
+    border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 999px;
-    padding: 0.45rem 0.9rem;
+    padding: 0.45rem 0.95rem;
     font-size: 0.9rem;
+    transition: transform 120ms ease, background-color 120ms ease, color 120ms ease;
 }
 
-/* Current section marker for orientation. */
+/* Active section highlight ensures orientation during long admin sessions. */
 .menu a.active {
-    background: #f2f8ff;
-    color: #14304a;
-    border-color: #f2f8ff;
+    background: linear-gradient(130deg, #ffffff, #f4fbff);
+    color: #103252;
+    border-color: #f4fbff;
 }
 
-/* Main content container. */
+/* Hover affordance improves discoverability of dashboard sections. */
+.menu a:hover {
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.12);
+}
+
+/* Main content wrapper defines a balanced reading width and vertical rhythm. */
 .container {
-    width: min(1200px, 94vw);
-    margin: 1.2rem auto 2rem;
+    width: min(1260px, 95vw);
+    margin: 1.3rem auto 2.2rem;
     display: grid;
     gap: 1rem;
+    animation: fadeIn 260ms ease;
 }
 
-/* Generic card component for forms, summaries and content blocks. */
+/* Generic card style powers all content blocks with soft elevation. */
 .card {
-    background: #ffffff;
-    border: 1px solid #d8e3ea;
-    border-radius: 0.8rem;
-    padding: 1rem 1.1rem;
-    box-shadow: 0 7px 20px rgba(16, 33, 47, 0.06);
+    background: linear-gradient(160deg, #ffffff 0%, #fbfdff 100%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 1rem 1.15rem;
+    box-shadow: 0 14px 34px rgba(12, 34, 52, 0.08);
 }
 
-/* Stats responsive layout for dashboard numbers. */
+/* Stats grid is responsive and keeps KPIs visually balanced. */
 .stats-grid {
     display: grid;
-    gap: 0.8rem;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.85rem;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
-/* Individual KPI card styling. */
+/* KPI cards get a decorative left stripe to improve scanning speed. */
 .stat-card {
-    background: #ffffff;
-    border: 1px solid #d8e3ea;
-    border-radius: 0.75rem;
-    padding: 1rem;
+    position: relative;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 1rem 1rem 1rem 1.2rem;
+    overflow: hidden;
 }
 
-/* Balanced heading spacing inside cards and tables. */
+/* Accent stripe indicates each KPI block starts at a fixed visual anchor. */
+.stat-card::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 6px;
+    height: 100%;
+    background: linear-gradient(180deg, var(--brand), var(--accent));
+}
+
+/* Headings and paragraphs keep consistent spacing across all cards. */
 h1,
 h2,
+h3,
 p {
     margin-top: 0;
 }
 
-/* Flash message component for success/error feedback after actions. */
+/* Flash message styles communicate operation outcome clearly. */
 .flash {
-    border-radius: 0.6rem;
-    padding: 0.8rem 1rem;
+    border-radius: var(--radius-md);
+    padding: 0.85rem 1rem;
     border: 1px solid transparent;
 }
 
-/* Success flash palette. */
+/* Success feedback uses a green palette with strong contrast. */
 .flash-success {
-    background: #e5f6eb;
-    border-color: #a7dfb8;
-    color: #12592d;
+    background: #eaf9f1;
+    color: #09583a;
+    border-color: #9ed8bb;
 }
 
-/* Error flash palette. */
+/* Error feedback uses a red palette while preserving readability. */
 .flash-error {
-    background: #fdeaea;
-    border-color: #f0b5b5;
-    color: #7a1717;
+    background: #ffeced;
+    color: #7f1928;
+    border-color: #f4b9c1;
 }
 
-/* Form grid for compact yet readable control distribution. */
+/* Form grid supports two-column desktop editing and stacks on mobile. */
 .form-grid {
     display: grid;
-    gap: 0.8rem;
+    gap: 0.9rem;
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-/* Helper class to make one control consume full row width. */
+/* Utility class allows full-width controls inside two-column forms. */
 .col-span-2 {
     grid-column: span 2;
 }
 
-/* Standard label formatting for accessibility and visual hierarchy. */
+/* Labels define compact vertical hierarchy between caption and field. */
 label {
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
+    color: #20384a;
     font-size: 0.9rem;
-    color: #223648;
 }
 
-/* Inputs share common dimensions and border treatment. */
+/* Field styles provide a clean, modern surface and consistent spacing. */
 input,
 select,
 textarea {
     width: 100%;
-    border: 1px solid #bfd0dd;
-    border-radius: 0.55rem;
-    padding: 0.55rem 0.65rem;
+    border: 1px solid #bed1df;
+    border-radius: 10px;
+    padding: 0.58rem 0.66rem;
     font-size: 0.95rem;
-    background: #fbfdff;
-    color: #12212f;
+    background: #fafdff;
+    color: #11293a;
 }
 
-/* Focus ring improves keyboard accessibility and visibility. */
+/* Focus state adds strong visual guidance for keyboard and pointer users. */
 input:focus,
 select:focus,
 textarea:focus {
     outline: none;
-    border-color: #2f78b5;
-    box-shadow: 0 0 0 3px rgba(47, 120, 181, 0.18);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(47, 132, 201, 0.18);
 }
 
-/* Reusable button base. */
+/* Primary button style follows brand color system and motion affordance. */
 .button {
-    display: inline-block;
-    border: 1px solid #1f5b8d;
-    background: #1f5b8d;
+    border: 1px solid var(--brand-strong);
+    background: linear-gradient(130deg, var(--brand), var(--brand-strong));
     color: #ffffff;
-    border-radius: 0.55rem;
-    padding: 0.55rem 0.9rem;
+    border-radius: 10px;
+    padding: 0.57rem 0.95rem;
     cursor: pointer;
-    font-weight: 600;
+    font-weight: 700;
+    transition: transform 120ms ease, filter 120ms ease;
 }
 
-/* Small button variant for inline actions. */
+/* Hover animation gives tactile feedback without being distracting. */
+.button:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.03);
+}
+
+/* Small button variant for compact table actions. */
 .button-small {
-    padding: 0.3rem 0.6rem;
     font-size: 0.82rem;
+    padding: 0.35rem 0.66rem;
 }
 
-/* Secondary action button tone. */
+/* Secondary action variant for non-primary toggles. */
 .button-secondary {
-    background: #7a8b99;
-    border-color: #7a8b99;
+    border-color: #768b9d;
+    background: linear-gradient(120deg, #8a9cad, #6d8091);
 }
 
-/* Destructive action button tone with high contrast. */
+/* Destructive action variant with elevated contrast for risk actions. */
 .button-danger {
-    background: #b64545;
-    border-color: #b64545;
+    border-color: #9e2432;
+    background: linear-gradient(120deg, #c64152, #a72f3f);
 }
 
-/* Inline forms displayed side by side where actions are short. */
+/* Inline forms keep table actions readable and aligned. */
 .inline-form {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    margin: 0.2rem 0.2rem 0.2rem 0;
+    gap: 0.35rem;
+    margin: 0.15rem 0.15rem 0.15rem 0;
 }
 
-/* Inline label variant for compact control groups. */
+/* Compact label width avoids layout jumps in inline controls. */
 .inline-label {
-    min-width: 140px;
+    min-width: 142px;
 }
 
-/* Module checkboxes container with clear visual boundary. */
+/* Dashed fieldset boundary distinguishes grouped module options. */
 .module-fieldset {
-    border: 1px dashed #bfd0dd;
-    border-radius: 0.55rem;
-    padding: 0.5rem;
+    border: 1px dashed #bad0e0;
+    border-radius: 10px;
+    padding: 0.55rem;
     display: grid;
     gap: 0.3rem;
 }
 
-/* Table wrapper for horizontal overflow on smaller devices. */
+/* Responsive table wrapper preserves layout while allowing horizontal scroll. */
 .table-wrap {
     overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
     background: #ffffff;
-    border: 1px solid #d8e3ea;
-    border-radius: 0.8rem;
+    box-shadow: 0 10px 24px rgba(16, 40, 58, 0.05);
 }
 
-/* Table baseline structure. */
+/* Table layout and minimum width maintain readability in data-heavy pages. */
 table {
     width: 100%;
+    min-width: 980px;
     border-collapse: collapse;
-    min-width: 900px;
 }
 
-/* Cell spacing and separators tuned for dense management data. */
+/* Cell styling prioritizes scanability and clear row boundaries. */
 th,
 td {
-    border-bottom: 1px solid #e1e9ef;
+    border-bottom: 1px solid #e3edf4;
     text-align: left;
-    padding: 0.65rem;
+    padding: 0.7rem;
     vertical-align: top;
     font-size: 0.9rem;
 }
 
-/* Table headers with stronger contrast for quick scanning. */
+/* Header row uses contrasting background for instant contextual anchoring. */
 th {
-    background: #eff5f9;
-    color: #16344a;
+    background: linear-gradient(120deg, #eaf3fb, #e2eef8);
+    color: #173852;
 }
 
-/* Small tag component for statuses and modules. */
+/* Tags visually encode module/state metadata with compact capsules. */
 .tag {
     display: inline-flex;
     align-items: center;
-    background: #e6eef5;
-    color: #143048;
-    border-radius: 999px;
     padding: 0.2rem 0.5rem;
+    margin: 0.1rem 0.15rem 0.1rem 0;
+    border-radius: 999px;
     font-size: 0.78rem;
-    margin: 0.1rem 0.1rem 0.1rem 0;
+    background: #e6f2fb;
+    color: #124266;
 }
 
-/* Pending tag accent for lack of permissions. */
+/* Pending tags use amber palette to draw attention to unresolved access. */
 .tag-pending {
-    background: #fef4d7;
-    color: #7a5600;
+    background: #ffefcc;
+    color: #7b5300;
 }
 
-/* Responsive adjustments for mobile widths. */
-@media (max-width: 860px) {
+/* Schedule week cards use stronger separation for board-style readability. */
+.schedule-week {
+    border: 1px solid #cfe0ed;
+}
+
+/* Multi-column schedule board adapts from desktop to mobile naturally. */
+.schedule-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* Day card acts as a column in the weekly board. */
+.schedule-day {
+    border: 1px solid #d7e5f0;
+    border-radius: 14px;
+    padding: 0.7rem;
+    background: linear-gradient(150deg, #ffffff, #f8fbff);
+}
+
+/* Day header anchors the reading order by date context. */
+.schedule-day header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.55rem;
+}
+
+/* Item stack inside each day maintains consistent spacing. */
+.schedule-items {
+    display: grid;
+    gap: 0.5rem;
+}
+
+/* Individual activity cards with subtle brand border accent. */
+.schedule-item {
+    border: 1px solid #cfe0ef;
+    border-left: 5px solid var(--brand);
+    border-radius: 12px;
+    padding: 0.5rem 0.6rem;
+    background: #ffffff;
+    display: grid;
+    gap: 0.3rem;
+}
+
+/* Metadata row keeps module and location chips aligned neatly. */
+.meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+
+/* Simple fade animation to soften hard layout swaps after page load. */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(3px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Mobile tune-ups preserve usability on narrow devices. */
+@media (max-width: 900px) {
     .form-grid {
         grid-template-columns: 1fr;
     }
@@ -284,8 +403,11 @@ th {
         grid-column: span 1;
     }
 
+    .topbar {
+        padding: 0.9rem 1rem;
+    }
+
     .menu {
-        padding-bottom: 1rem;
+        padding: 0.75rem 1rem 1rem;
     }
 }
-

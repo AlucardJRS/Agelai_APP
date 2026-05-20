@@ -40,11 +40,39 @@ final class Database
         try {
             $this->pdo = new \PDO($dsn, $username, $password, $options);
         } catch (\PDOException $exception) {
-            throw new \RuntimeException(
-                'No se pudo conectar a MariaDB. Revisa AGELAI_DB_HOST/PORT/NAME/USER/PASS y que la BD exista.',
-                0,
-                $exception
-            );
+            $message = $exception->getMessage();
+            $unknownDb = str_contains($message, 'Unknown database') || str_contains($message, '[1049]');
+
+            if ($unknownDb) {
+                if (!preg_match('/^[A-Za-z0-9_]+$/', $database)) {
+                    throw new \RuntimeException(
+                        'Nombre de base de datos invalido para creacion automatica segura.',
+                        0,
+                        $exception
+                    );
+                }
+
+                try {
+                    $serverDsn = sprintf('mysql:host=%s;port=%d;charset=%s', $host, $port, $charset);
+                    $bootstrapPdo = new \PDO($serverDsn, $username, $password, $options);
+                    $bootstrapPdo->exec(
+                        'CREATE DATABASE IF NOT EXISTS `' . $database . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+                    );
+                    $this->pdo = new \PDO($dsn, $username, $password, $options);
+                } catch (\Throwable $createDbException) {
+                    throw new \RuntimeException(
+                        'No se pudo crear/conectar a la base MariaDB. Revisa permisos del usuario.',
+                        0,
+                        $createDbException
+                    );
+                }
+            } else {
+                throw new \RuntimeException(
+                    'No se pudo conectar a MariaDB. Revisa AGELAI_DB_HOST/PORT/NAME/USER/PASS y que la BD exista.',
+                    0,
+                    $exception
+                );
+            }
         }
 
         $this->pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
@@ -65,7 +93,6 @@ final class Database
      */
     public function ensureSchema(array $config): void
     {
-        $this->pdo->beginTransaction();
         try {
             $this->pdo->exec(
                 'CREATE TABLE IF NOT EXISTS admins (
@@ -141,17 +168,39 @@ final class Database
                     confirmation_code_hash CHAR(64) DEFAULT NULL,
                     confirmation_deadline VARCHAR(35) DEFAULT NULL,
                     payment_status VARCHAR(40) NOT NULL DEFAULT \'pending\',
+                    payment_method VARCHAR(20) NOT NULL DEFAULT \'cash\',
                     created_at VARCHAR(35) NOT NULL,
                     updated_at VARCHAR(35) NOT NULL,
                     PRIMARY KEY (id),
                     KEY idx_reservations_user (user_id),
                     KEY idx_reservations_activity_status (activity_id, status),
+                    KEY idx_reservations_payment_method (payment_method),
                     CONSTRAINT fk_reservations_user
                         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                     CONSTRAINT fk_reservations_activity
                         FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
+
+            // Backward-compatible migration for already-created local databases.
+            $columnExistsQuery = $this->pdo->prepare(
+                'SELECT COUNT(*) AS total
+                 FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = :table_name
+                   AND COLUMN_NAME = :column_name'
+            );
+            $columnExistsQuery->execute([
+                ':table_name' => 'reservations',
+                ':column_name' => 'payment_method',
+            ]);
+            $columnExists = (int) $columnExistsQuery->fetchColumn() > 0;
+            if (!$columnExists) {
+                $this->pdo->exec(
+                    'ALTER TABLE reservations
+                     ADD COLUMN payment_method VARCHAR(20) NOT NULL DEFAULT \'cash\' AFTER payment_status'
+                );
+            }
 
             $this->pdo->exec(
                 'CREATE TABLE IF NOT EXISTS announcements (
@@ -197,10 +246,7 @@ final class Database
 
             $this->seedModules((array) ($config['allowed_modules'] ?? []));
             $this->seedAdmin((array) ($config['admin_seed'] ?? []));
-
-            $this->pdo->commit();
         } catch (\Throwable $exception) {
-            $this->pdo->rollBack();
             throw $exception;
         }
     }

@@ -5,6 +5,7 @@ Este repositorio arranca desde cero para construir:
 - API backend compartida para web y Android
 - Dashboard web de administracion
 - App Android (Flutter) conectada a la misma base de datos
+- Horarios semanales visuales y gestion por sedes (Cala d'Or y Cala Egos)
 
 ## Stack Elegido
 
@@ -23,6 +24,13 @@ Este repositorio arranca desde cero para construir:
 - `backend/api`: API REST + dashboard web + seguridad base
 - `mobile_flutter/app`: app Flutter para Android conectada al backend
 - `docs/setup_local.md`: guia paso a paso para ejecutar en local
+
+## Reglas de Negocio de Esta Iteracion
+
+- Base de datos: MariaDB (local y produccion).
+- Aprobacion manual admin: obligatoria para todas las reservas.
+- Metodos de pago iniciales: efectivo, Bizum y tarjeta.
+- Sedes activas: Cala d'Or (principal) y Cala Egos.
 
 ## Siguiente Paso
 

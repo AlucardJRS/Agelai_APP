@@ -150,6 +150,11 @@ final class App
             return;
         }
 
+        if ($method === 'GET' && $path === '/api/schedule') {
+            $this->apiSchedule($user);
+            return;
+        }
+
         if ($method === 'GET' && $path === '/api/reservations') {
             $this->apiReservations($user);
             return;
@@ -222,6 +227,11 @@ final class App
 
         if ($method === 'GET' && $path === '/dashboard/activities') {
             $this->dashboardActivities();
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/schedule') {
+            $this->dashboardSchedule();
             return;
         }
 
@@ -434,6 +444,7 @@ final class App
     private function dashboardActivities(): void
     {
         $moduleRows = $this->pdo->query('SELECT code, name FROM modules ORDER BY name ASC')->fetchAll();
+        $locations = (array) ($this->config['locations'] ?? []);
 
         $activities = $this->pdo->query(
             'SELECT a.*,
@@ -450,7 +461,24 @@ final class App
         $this->render('activities', [
             'title' => 'Actividades',
             'modules' => $moduleRows,
+            'locations' => $locations,
             'activities' => $activities,
+        ]);
+    }
+
+    private function dashboardSchedule(): void
+    {
+        $activities = $this->fetchScheduleActivities(
+            moduleCodes: [],
+            includeAllModules: true,
+            includeOnlyActive: true,
+            daysAhead: 14
+        );
+
+        $this->render('schedule', [
+            'title' => 'Horarios Semanales',
+            'weekBoard' => $this->groupActivitiesByWeekAndDay($activities),
+            'locationNames' => $this->locationNamesMap(),
         ]);
     }
 
@@ -469,6 +497,7 @@ final class App
         $capacity = (int) ($_POST['capacity'] ?? 0);
         $location = trim((string) ($_POST['location'] ?? ''));
         $notes = trim((string) ($_POST['notes'] ?? ''));
+        $allowedLocationNames = array_values($this->locationNamesMap());
 
         if ($title === '' || mb_strlen($title) > 120 || $moduleCode === null) {
             $this->setFlash('error', 'Datos principales invalidos.');
@@ -489,8 +518,11 @@ final class App
             header('Location: /dashboard/activities');
             return;
         }
+        $utcZone = new \DateTimeZone('UTC');
+        $startDateIso = $startDate->setTimezone($utcZone)->format('c');
+        $endDateIso = $endDate->setTimezone($utcZone)->format('c');
 
-        if ($location === '' || mb_strlen($location) > 120) {
+        if ($location === '' || mb_strlen($location) > 120 || !in_array($location, $allowedLocationNames, true)) {
             $this->setFlash('error', 'Ubicacion invalida.');
             header('Location: /dashboard/activities');
             return;
@@ -503,8 +535,8 @@ final class App
         $insert->execute([
             ':title' => $title,
             ':module_code' => $moduleCode,
-            ':starts_at' => $startDate->format('c'),
-            ':ends_at' => $endDate->format('c'),
+            ':starts_at' => $startDateIso,
+            ':ends_at' => $endDateIso,
             ':capacity' => $capacity,
             ':location' => $location,
             ':notes' => $notes,
@@ -546,9 +578,9 @@ final class App
     private function dashboardReservations(): void
     {
         $reservations = $this->pdo->query(
-            'SELECT r.id, r.status, r.payment_status, r.created_at, r.updated_at,
+            'SELECT r.id, r.status, r.payment_status, r.payment_method, r.created_at, r.updated_at,
                     u.full_name, u.email,
-                    a.title, a.module_code, a.starts_at, a.ends_at, a.capacity,
+                    a.title, a.module_code, a.starts_at, a.ends_at, a.capacity, a.location,
                     (
                        SELECT COUNT(*)
                        FROM reservations rx
@@ -564,6 +596,7 @@ final class App
         $this->render('reservations', [
             'title' => 'Reservas',
             'reservations' => $reservations,
+            'paymentMethods' => $this->paymentMethodsMap(),
         ]);
     }
 
@@ -585,7 +618,7 @@ final class App
         $this->pdo->beginTransaction();
         try {
             $query = $this->pdo->prepare(
-                'SELECT r.id, r.status
+                'SELECT r.id, r.status, r.payment_method
                  FROM reservations r
                  WHERE r.id = :id
                  LIMIT 1'
@@ -597,6 +630,13 @@ final class App
                 throw new \RuntimeException('Estado no aprobable.');
             }
 
+            $paymentMethod = (string) ($reservation['payment_method'] ?? 'cash');
+            $paymentStatusTarget = match ($paymentMethod) {
+                'bizum' => 'pending_bizum_collection',
+                'card' => 'pending_card_collection',
+                default => 'pending_cash_collection',
+            };
+
             $update = $this->pdo->prepare(
                 'UPDATE reservations
                  SET status = :status, payment_status = :payment_status, updated_at = :updated_at
@@ -604,7 +644,7 @@ final class App
             );
             $update->execute([
                 ':status' => 'confirmed',
-                ':payment_status' => 'paid_mock',
+                ':payment_status' => $paymentStatusTarget,
                 ':updated_at' => gmdate('c'),
                 ':id' => $reservationId,
             ]);
@@ -696,6 +736,9 @@ final class App
             header('Location: /dashboard/announcements');
             return;
         }
+        $utcZone = new \DateTimeZone('UTC');
+        $startDateIso = $startDate->setTimezone($utcZone)->format('c');
+        $endDateIso = $endDate->setTimezone($utcZone)->format('c');
 
         $insert = $this->pdo->prepare(
             'INSERT INTO announcements (module_code, title, body, starts_at, ends_at, is_active, created_at)
@@ -705,8 +748,8 @@ final class App
             ':module_code' => $moduleCode,
             ':title' => $title,
             ':body' => $body,
-            ':starts_at' => $startDate->format('c'),
-            ':ends_at' => $endDate->format('c'),
+            ':starts_at' => $startDateIso,
+            ':ends_at' => $endDateIso,
             ':is_active' => 1,
             ':created_at' => gmdate('c'),
         ]);
@@ -809,6 +852,8 @@ final class App
             'ok' => true,
             'user' => $this->userPayload($user, $modules),
             'pending_profile' => count($modules) === 0 || (string) $user['status'] !== 'active',
+            'payment_methods' => $this->paymentMethodsMap(),
+            'locations' => $this->locationNamesMap(),
             'message' => count($modules) === 0 || (string) $user['status'] !== 'active'
                 ? 'Pendiente de asignar perfil por parte del administrador.'
                 : 'Perfil activo.',
@@ -839,47 +884,53 @@ final class App
             return;
         }
 
-        $placeholders = implode(', ', array_fill(0, count($moduleCodes), '?'));
-        $query = $this->pdo->prepare(
-            "SELECT a.*,
-                (
-                    SELECT COUNT(*) FROM reservations r
-                    WHERE r.activity_id = a.id
-                    AND r.status IN ('pending_user_confirm', 'pending_admin_approval', 'confirmed')
-                ) AS occupied_slots
-             FROM activities a
-             WHERE a.status = 'active'
-               AND a.module_code IN ($placeholders)
-               AND a.ends_at >= ?
-             ORDER BY a.starts_at ASC"
+        $activities = $this->fetchScheduleActivities(
+            moduleCodes: $moduleCodes,
+            includeAllModules: false,
+            includeOnlyActive: true,
+            daysAhead: 30
         );
-        $params = $moduleCodes;
-        $params[] = gmdate('c');
-        $query->execute($params);
-
-        $activities = [];
-        foreach ($query->fetchAll() as $row) {
-            $capacity = (int) $row['capacity'];
-            $occupied = (int) $row['occupied_slots'];
-            $remaining = max(0, $capacity - $occupied);
-
-            $activities[] = [
-                'id' => (int) $row['id'],
-                'title' => (string) $row['title'],
-                'module_code' => (string) $row['module_code'],
-                'starts_at' => (string) $row['starts_at'],
-                'ends_at' => (string) $row['ends_at'],
-                'capacity' => $capacity,
-                'occupied_slots' => $occupied,
-                'remaining_slots' => $remaining,
-                'location' => (string) $row['location'],
-                'notes' => (string) $row['notes'],
-            ];
-        }
 
         $this->json([
             'ok' => true,
             'activities' => $activities,
+            'payment_methods' => $this->paymentMethodsMap(),
+            'locations' => $this->locationNamesMap(),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function apiSchedule(array $user): void
+    {
+        if (!$this->userHasActiveAccess($user)) {
+            $this->json([
+                'ok' => true,
+                'schedule' => [],
+                'week_board' => [],
+                'message' => 'Tu perfil aun no tiene acceso a modulos.',
+            ]);
+            return;
+        }
+
+        $moduleCodes = array_map(
+            static fn (array $module): string => (string) $module['code'],
+            $this->getUserModules((int) $user['id'])
+        );
+
+        $activities = $this->fetchScheduleActivities(
+            moduleCodes: $moduleCodes,
+            includeAllModules: false,
+            includeOnlyActive: true,
+            daysAhead: 14
+        );
+
+        $this->json([
+            'ok' => true,
+            'schedule' => $activities,
+            'week_board' => $this->groupActivitiesByWeekAndDay($activities),
+            'location_names' => $this->locationNamesMap(),
         ]);
     }
 
@@ -888,6 +939,16 @@ final class App
      */
     private function apiReserveActivity(array $user, int $activityId): void
     {
+        $payload = Security::jsonBody();
+        $paymentMethodCode = $this->normalizePaymentMethod($payload['payment_method'] ?? null);
+        if ($paymentMethodCode === null) {
+            $this->json([
+                'ok' => false,
+                'message' => 'Metodo de pago invalido. Usa: efectivo, bizum o tarjeta.',
+            ], 422);
+            return;
+        }
+
         if (!$this->userHasActiveAccess($user)) {
             $this->json(['ok' => false, 'message' => 'Tu perfil no tiene acceso a reservas.'], 403);
             return;
@@ -947,8 +1008,8 @@ final class App
             }
 
             $insert = $this->pdo->prepare(
-                'INSERT INTO reservations (user_id, activity_id, status, confirmation_code_hash, confirmation_deadline, payment_status, created_at, updated_at)
-                 VALUES (:user_id, :activity_id, :status, :confirmation_code_hash, :confirmation_deadline, :payment_status, :created_at, :updated_at)'
+                'INSERT INTO reservations (user_id, activity_id, status, confirmation_code_hash, confirmation_deadline, payment_status, payment_method, created_at, updated_at)
+                 VALUES (:user_id, :activity_id, :status, :confirmation_code_hash, :confirmation_deadline, :payment_status, :payment_method, :created_at, :updated_at)'
             );
             $insert->execute([
                 ':user_id' => (int) $user['id'],
@@ -956,7 +1017,8 @@ final class App
                 ':status' => $status,
                 ':confirmation_code_hash' => $confirmationCodeHash,
                 ':confirmation_deadline' => $confirmationDeadline,
-                ':payment_status' => $status === 'waitlist' ? 'not_applicable' : 'pending',
+                ':payment_status' => $status === 'waitlist' ? 'pending_waitlist' : 'pending_user_confirmation',
+                ':payment_method' => $paymentMethodCode,
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
@@ -974,6 +1036,8 @@ final class App
                 'ok' => true,
                 'reservation_id' => $reservationId,
                 'status' => 'waitlist',
+                'payment_method' => $paymentMethodCode,
+                'payment_method_label' => $this->paymentMethodLabel($paymentMethodCode),
                 'message' => 'Sin cupo disponible. Has entrado en lista de espera.',
             ]);
             return;
@@ -983,6 +1047,8 @@ final class App
             'ok' => true,
             'reservation_id' => $reservationId,
             'status' => 'pending_user_confirm',
+            'payment_method' => $paymentMethodCode,
+            'payment_method_label' => $this->paymentMethodLabel($paymentMethodCode),
             // Local mode helper: this simulates confirmation code sent by email.
             'local_confirmation_code' => $confirmationCode,
             'message' => 'Reserva creada. Confirma con el codigo recibido para pasar a validacion admin.',
@@ -1035,6 +1101,7 @@ final class App
         $update = $this->pdo->prepare(
             'UPDATE reservations
              SET status = :status,
+                 payment_status = :payment_status,
                  confirmation_code_hash = NULL,
                  confirmation_deadline = NULL,
                  updated_at = :updated_at
@@ -1042,6 +1109,7 @@ final class App
         );
         $update->execute([
             ':status' => 'pending_admin_approval',
+            ':payment_status' => 'pending_admin_validation',
             ':updated_at' => gmdate('c'),
             ':id' => $reservationId,
         ]);
@@ -1049,7 +1117,7 @@ final class App
         $this->json([
             'ok' => true,
             'status' => 'pending_admin_approval',
-            'message' => 'Reserva confirmada por usuario. Queda pendiente de validacion final por administrador.',
+            'message' => 'Reserva confirmada por usuario. Ahora queda pendiente de aprobacion manual del administrador.',
             'google_calendar' => 'Integracion real pendiente para entorno productivo.',
         ]);
     }
@@ -1159,7 +1227,7 @@ final class App
     private function apiReservations(array $user): void
     {
         $query = $this->pdo->prepare(
-            'SELECT r.id, r.status, r.payment_status, r.created_at, r.updated_at,
+            'SELECT r.id, r.status, r.payment_status, r.payment_method, r.created_at, r.updated_at,
                     a.id AS activity_id, a.title, a.module_code, a.starts_at, a.ends_at, a.location
              FROM reservations r
              INNER JOIN activities a ON a.id = r.activity_id
@@ -1174,6 +1242,8 @@ final class App
                 'id' => (int) $row['id'],
                 'status' => (string) $row['status'],
                 'payment_status' => (string) $row['payment_status'],
+                'payment_method' => (string) $row['payment_method'],
+                'payment_method_label' => $this->paymentMethodLabel((string) $row['payment_method']),
                 'created_at' => (string) $row['created_at'],
                 'updated_at' => (string) $row['updated_at'],
                 'activity' => [
@@ -1244,6 +1314,259 @@ final class App
             'ok' => true,
             'announcements' => $announcements,
         ]);
+    }
+
+    /**
+     * @param array<int, string> $moduleCodes
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchScheduleActivities(
+        array $moduleCodes,
+        bool $includeAllModules,
+        bool $includeOnlyActive,
+        int $daysAhead
+    ): array {
+        if (!$includeAllModules && count($moduleCodes) === 0) {
+            return [];
+        }
+
+        $utc = new \DateTimeZone('UTC');
+        $now = new \DateTimeImmutable('now', $utc);
+        $limit = $now->modify('+' . max(1, $daysAhead) . ' days');
+
+        $conditions = [];
+        $params = [];
+
+        if ($includeOnlyActive) {
+            $conditions[] = "a.status = 'active'";
+        }
+
+        if (!$includeAllModules) {
+            $placeholders = implode(', ', array_fill(0, count($moduleCodes), '?'));
+            $conditions[] = "a.module_code IN ($placeholders)";
+            $params = [...$params, ...$moduleCodes];
+        }
+
+        $conditions[] = 'a.ends_at >= ?';
+        $params[] = $now->format('c');
+        $conditions[] = 'a.starts_at <= ?';
+        $params[] = $limit->format('c');
+
+        $whereSql = implode(' AND ', $conditions);
+        $query = $this->pdo->prepare(
+            "SELECT a.*,
+               (
+                 SELECT COUNT(*)
+                 FROM reservations r
+                 WHERE r.activity_id = a.id
+                 AND r.status IN ('pending_user_confirm', 'pending_admin_approval', 'confirmed')
+               ) AS occupied_slots
+             FROM activities a
+             WHERE $whereSql
+             ORDER BY a.starts_at ASC"
+        );
+        $query->execute($params);
+
+        $locationNames = $this->locationNamesMap();
+        $activities = [];
+        foreach ($query->fetchAll() as $row) {
+            $capacity = (int) $row['capacity'];
+            $occupied = (int) $row['occupied_slots'];
+            $remaining = max(0, $capacity - $occupied);
+            $startLocal = $this->toLocalDate((string) $row['starts_at']);
+            $endLocal = $this->toLocalDate((string) $row['ends_at']);
+
+            $locationValue = (string) $row['location'];
+            $locationLabel = in_array($locationValue, $locationNames, true) ? $locationValue : $locationValue;
+
+            $activities[] = [
+                'id' => (int) $row['id'],
+                'title' => (string) $row['title'],
+                'module_code' => (string) $row['module_code'],
+                'starts_at' => (string) $row['starts_at'],
+                'ends_at' => (string) $row['ends_at'],
+                'starts_at_local' => $startLocal === null ? null : $startLocal->format('Y-m-d H:i'),
+                'ends_at_local' => $endLocal === null ? null : $endLocal->format('Y-m-d H:i'),
+                'weekday' => $startLocal === null ? null : $this->weekdayNameEs((int) $startLocal->format('N')),
+                'date_label' => $startLocal === null ? null : $startLocal->format('d/m'),
+                'time_range' => ($startLocal !== null && $endLocal !== null)
+                    ? $startLocal->format('H:i') . ' - ' . $endLocal->format('H:i')
+                    : null,
+                'capacity' => $capacity,
+                'occupied_slots' => $occupied,
+                'remaining_slots' => $remaining,
+                'location' => $locationValue,
+                'location_label' => $locationLabel,
+                'notes' => (string) $row['notes'],
+            ];
+        }
+
+        return $activities;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $activities
+     * @return array<int, array<string, mixed>>
+     */
+    private function groupActivitiesByWeekAndDay(array $activities): array
+    {
+        $board = [];
+        foreach ($activities as $activity) {
+            $startLocal = $this->toLocalDate((string) ($activity['starts_at'] ?? ''));
+            if ($startLocal === null) {
+                continue;
+            }
+
+            $isoWeek = $startLocal->format('o-\WW');
+            $weekStart = $startLocal->modify('monday this week');
+            $weekEnd = $weekStart->modify('+6 days');
+            $weekLabel = 'Semana ' . $startLocal->format('W') . ' (' . $weekStart->format('d/m') . ' - ' . $weekEnd->format('d/m') . ')';
+
+            $weekdayIndex = (int) $startLocal->format('N');
+            $dayLabel = $this->weekdayNameEs($weekdayIndex);
+            $dayDate = $startLocal->format('d/m');
+            $dayKey = $weekdayIndex . '-' . $dayDate;
+
+            if (!isset($board[$isoWeek])) {
+                $board[$isoWeek] = [
+                    'week_key' => $isoWeek,
+                    'week_label' => $weekLabel,
+                    'days' => [],
+                ];
+            }
+
+            if (!isset($board[$isoWeek]['days'][$dayKey])) {
+                $board[$isoWeek]['days'][$dayKey] = [
+                    'weekday_index' => $weekdayIndex,
+                    'day_label' => $dayLabel,
+                    'date_label' => $dayDate,
+                    'items' => [],
+                ];
+            }
+
+            $board[$isoWeek]['days'][$dayKey]['items'][] = $activity;
+        }
+
+        foreach ($board as &$week) {
+            uasort(
+                $week['days'],
+                static fn (array $a, array $b): int => ($a['weekday_index'] <=> $b['weekday_index'])
+            );
+        }
+        unset($week);
+
+        return array_values($board);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function paymentMethodsMap(): array
+    {
+        $methods = (array) ($this->config['payment_methods'] ?? []);
+        if ($methods === []) {
+            return [
+                'cash' => 'Efectivo',
+                'bizum' => 'Bizum',
+                'card' => 'Tarjeta',
+            ];
+        }
+
+        $mapped = [];
+        foreach ($methods as $code => $label) {
+            if (!is_string($code) || !is_string($label)) {
+                continue;
+            }
+            $mapped[$code] = $label;
+        }
+
+        return $mapped;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function locationNamesMap(): array
+    {
+        $locations = (array) ($this->config['locations'] ?? []);
+        $mapped = [];
+        foreach ($locations as $code => $meta) {
+            if (!is_string($code)) {
+                continue;
+            }
+
+            if (is_array($meta) && isset($meta['name']) && is_string($meta['name'])) {
+                $mapped[$code] = $meta['name'];
+                continue;
+            }
+        }
+
+        if ($mapped === []) {
+            $mapped = [
+                'cala_dor' => "Cala d'Or",
+                'cala_egos' => 'Cala Egos',
+            ];
+        }
+
+        return $mapped;
+    }
+
+    private function isValidPaymentMethod(string $code): bool
+    {
+        return array_key_exists($code, $this->paymentMethodsMap());
+    }
+
+    private function paymentMethodLabel(string $code): string
+    {
+        return $this->paymentMethodsMap()[$code] ?? $code;
+    }
+
+    private function normalizePaymentMethod(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $raw = mb_strtolower(trim($value));
+        $aliases = [
+            'cash' => 'cash',
+            'efectivo' => 'cash',
+            'bizum' => 'bizum',
+            'card' => 'card',
+            'tarjeta' => 'card',
+        ];
+
+        if (!isset($aliases[$raw])) {
+            return null;
+        }
+
+        $normalized = $aliases[$raw];
+        return $this->isValidPaymentMethod($normalized) ? $normalized : null;
+    }
+
+    private function toLocalDate(string $isoDate): ?\DateTimeImmutable
+    {
+        $date = date_create_immutable($isoDate);
+        if ($date === false) {
+            return null;
+        }
+
+        $timezone = new \DateTimeZone((string) ($this->config['timezone'] ?? 'Europe/Madrid'));
+        return $date->setTimezone($timezone);
+    }
+
+    private function weekdayNameEs(int $isoWeekday): string
+    {
+        return match ($isoWeekday) {
+            1 => 'Lunes',
+            2 => 'Martes',
+            3 => 'Miercoles',
+            4 => 'Jueves',
+            5 => 'Viernes',
+            6 => 'Sabado',
+            7 => 'Domingo',
+            default => 'Dia',
+        };
     }
 
     /**
