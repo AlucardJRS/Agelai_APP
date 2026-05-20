@@ -89,3 +89,12 @@ En local, al arrancar backend se crea automaticamente (si no existe):
 - `password`: `clubagelai`
 
 Puedes cambiar este seed en `backend/api/config.php` (`local_user_seed`).
+
+## Hardening aplicado
+
+- PDO con `ATTR_EMULATE_PREPARES=false` y consultas preparadas (SQL injection).
+- Cabeceras HTTP defensivas (`CSP`, `X-Frame-Options`, `COOP/CORP`, `nosniff`).
+- Sesion admin endurecida (`HttpOnly`, `SameSite=Strict`, `strict_mode`, fingerprint y timeout).
+- Anti-fuerza-bruta por usuario+IP para login admin y login local.
+- Limite global de payload y rechazo de metodos HTTP no permitidos.
+- Hash de password fuerte con Argon2id cuando esta disponible + rehash automatico.

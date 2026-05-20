@@ -448,7 +448,7 @@ final class Database
         );
         $insert->execute([
             ':username' => $username,
-            ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+            ':password_hash' => Security::hashPassword($password),
             ':created_at' => gmdate('c'),
         ]);
     }
@@ -510,7 +510,7 @@ final class Database
             ':email' => $email,
             ':full_name' => $fullName,
             ':username' => $username,
-            ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+            ':password_hash' => Security::hashPassword($password),
             ':auth_provider' => 'local',
             ':status' => $status,
             ':created_at' => gmdate('c'),

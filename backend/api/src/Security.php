@@ -11,11 +11,45 @@ final class Security
      */
     public static function addSecurityHeaders(): void
     {
+        $isHttps = self::isHttpsRequest();
+
         header('X-Content-Type-Options: nosniff');
         header('X-Frame-Options: SAMEORIGIN');
+        header('X-Permitted-Cross-Domain-Policies: none');
+        header('Cross-Origin-Opener-Policy: same-origin');
+        header('Cross-Origin-Resource-Policy: same-origin');
         header('Referrer-Policy: strict-origin-when-cross-origin');
         header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
-        header('Content-Security-Policy: default-src \'self\'; style-src \'self\' \'unsafe-inline\'; script-src \'self\'; img-src \'self\' data:;');
+        header('Content-Security-Policy: default-src \'self\'; base-uri \'self\'; form-action \'self\'; frame-ancestors \'self\'; object-src \'none\'; connect-src \'self\'; style-src \'self\' \'unsafe-inline\'; script-src \'self\'; img-src \'self\' data:;');
+
+        // Avoid browser caching for authenticated/private responses.
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        // HSTS is only valid over HTTPS.
+        if ($isHttps) {
+            header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+        }
+    }
+
+    /**
+     * Detects HTTPS behind direct or reverse-proxy setups.
+     */
+    public static function isHttpsRequest(): bool
+    {
+        $https = strtolower((string) ($_SERVER['HTTPS'] ?? ''));
+        if ($https === 'on' || $https === '1') {
+            return true;
+        }
+
+        $serverPort = (string) ($_SERVER['SERVER_PORT'] ?? '');
+        if ($serverPort === '443') {
+            return true;
+        }
+
+        $forwardedProto = strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
+        return $forwardedProto === 'https';
     }
 
     /**
@@ -50,6 +84,58 @@ final class Security
     }
 
     /**
+     * Returns password_hash options with a strong default profile.
+     *
+     * @return array<string, int>
+     */
+    public static function passwordHashOptions(): array
+    {
+        // Argon2id settings target balanced security for local/prod environments.
+        return [
+            'memory_cost' => 64 * 1024,
+            'time_cost' => 4,
+            'threads' => 2,
+        ];
+    }
+
+    /**
+     * Hashes password with Argon2id when available, otherwise PASSWORD_DEFAULT.
+     */
+    public static function hashPassword(string $password): string
+    {
+        if (defined('PASSWORD_ARGON2ID')) {
+            return password_hash($password, PASSWORD_ARGON2ID, self::passwordHashOptions());
+        }
+
+        return password_hash($password, PASSWORD_DEFAULT);
+    }
+
+    /**
+     * Validates password and performs optional rehash for legacy hashes.
+     *
+     * @return array{valid: bool, rehash: string|null}
+     */
+    public static function verifyPasswordWithRehash(string $password, string $hash): array
+    {
+        if ($hash === '' || !password_verify($password, $hash)) {
+            return ['valid' => false, 'rehash' => null];
+        }
+
+        if (defined('PASSWORD_ARGON2ID')) {
+            if (password_needs_rehash($hash, PASSWORD_ARGON2ID, self::passwordHashOptions())) {
+                return ['valid' => true, 'rehash' => self::hashPassword($password)];
+            }
+            return ['valid' => true, 'rehash' => null];
+        }
+
+        if (password_needs_rehash($hash, PASSWORD_DEFAULT)) {
+            return ['valid' => true, 'rehash' => self::hashPassword($password)];
+        }
+
+        return ['valid' => true, 'rehash' => null];
+    }
+
+    /**
      * Reads JSON body safely and limits payload size.
      *
      * @return array<string, mixed>
@@ -66,7 +152,10 @@ final class Security
             return [];
         }
 
-        $decoded = json_decode($raw, true);
+        $decoded = json_decode($raw, true, 32, JSON_INVALID_UTF8_SUBSTITUTE);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return [];
+        }
         return is_array($decoded) ? $decoded : [];
     }
 

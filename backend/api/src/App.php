@@ -7,6 +7,9 @@ declare(strict_types=1);
 final class App
 {
     private Integrations $integrations;
+    private const AUTH_FAILURE_WINDOW_SECONDS = 900;
+    private const AUTH_FAILURE_BLOCK_THRESHOLD = 5;
+    private const ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 1800;
 
     public function __construct(
         private readonly \PDO $pdo,
@@ -24,6 +27,13 @@ final class App
         $requestUri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
         $path = rawurldecode((string) (parse_url($requestUri, PHP_URL_PATH) ?? '/'));
         $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+        // Reject suspicious request targets early.
+        if (strlen($path) > 2048 || str_contains($path, "\0")) {
+            http_response_code(400);
+            echo 'Ruta invalida';
+            return;
+        }
 
         if ($path === '/assets/styles.css') {
             $this->serveStylesheet();
@@ -122,6 +132,17 @@ final class App
             ':hit_count' => $hitCount + 1,
             ':key_name' => $key,
         ]);
+
+        // Opportunistic cleanup to avoid unbounded growth of limiter rows.
+        if (random_int(1, 100) === 1) {
+            $cleanup = $this->pdo->prepare(
+                'DELETE FROM rate_limits
+                 WHERE window_started_at < :cutoff'
+            );
+            $cleanup->execute([
+                ':cutoff' => time() - 86400,
+            ]);
+        }
     }
 
     private function serveStylesheet(): void
@@ -349,8 +370,16 @@ final class App
 
         $username = trim((string) ($_POST['username'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
+        $throttlePrincipal = strtolower($username === '' ? 'empty-admin' : $username);
+
+        if ($this->isAuthTemporarilyBlocked('admin_dashboard', $throttlePrincipal)) {
+            $this->setFlash('error', 'Demasiados intentos fallidos. Espera unos minutos.');
+            header('Location: /dashboard/login');
+            return;
+        }
 
         if ($username === '' || $password === '') {
+            $this->registerAuthFailure('admin_dashboard', $throttlePrincipal);
             $this->setFlash('error', 'Usuario y password son obligatorios.');
             header('Location: /dashboard/login');
             return;
@@ -360,15 +389,31 @@ final class App
         $query->execute([':username' => $username]);
         $admin = $query->fetch();
 
-        if ($admin === false || !password_verify($password, (string) $admin['password_hash'])) {
+        $hash = (string) ($admin['password_hash'] ?? '');
+        $verification = Security::verifyPasswordWithRehash($password, $hash);
+        if ($admin === false || !$verification['valid']) {
+            $this->registerAuthFailure('admin_dashboard', $throttlePrincipal);
             $this->setFlash('error', 'Credenciales invalidas.');
             header('Location: /dashboard/login');
             return;
         }
 
+        $this->clearAuthFailures('admin_dashboard', $throttlePrincipal);
+        if ($verification['rehash'] !== null) {
+            $rehash = $this->pdo->prepare(
+                'UPDATE admins SET password_hash = :password_hash WHERE id = :id'
+            );
+            $rehash->execute([
+                ':password_hash' => $verification['rehash'],
+                ':id' => (int) $admin['id'],
+            ]);
+        }
+
         session_regenerate_id(true);
         $_SESSION['admin_id'] = (int) $admin['id'];
         $_SESSION['admin_username'] = (string) $admin['username'];
+        $_SESSION['admin_fingerprint'] = $this->adminSessionFingerprint();
+        $_SESSION['admin_last_seen'] = time();
 
         $this->setFlash('success', 'Sesion iniciada correctamente.');
         header('Location: /dashboard');
@@ -382,12 +427,7 @@ final class App
             return;
         }
 
-        $_SESSION = [];
-        if (ini_get('session.use_cookies')) {
-            $params = session_get_cookie_params();
-            setcookie(session_name(), '', time() - 3600, $params['path'], $params['domain'], (bool) $params['secure'], (bool) $params['httponly']);
-        }
-        session_destroy();
+        $this->clearAdminSession();
 
         header('Location: /dashboard/login');
     }
@@ -651,7 +691,7 @@ final class App
         }
         $hasLocalCredentials = $usernameInput !== '' && $passwordInput !== '';
         $authProvider = $this->resolveAuthProvider($googleId, $hasLocalCredentials);
-        $passwordHash = $hasLocalCredentials ? password_hash($passwordInput, PASSWORD_DEFAULT) : null;
+        $passwordHash = $hasLocalCredentials ? Security::hashPassword($passwordInput) : null;
         $username = $usernameInput === '' ? null : $usernameInput;
 
         $moduleIds = [];
@@ -851,7 +891,7 @@ final class App
              WHERE id = :id'
         );
         $update->execute([
-            ':password_hash' => password_hash($newPassword, PASSWORD_DEFAULT),
+            ':password_hash' => Security::hashPassword($newPassword),
             ':auth_provider' => $authProvider,
             ':id' => $userId,
         ]);
@@ -1260,13 +1300,24 @@ final class App
         $payload = Security::jsonBody();
         $username = trim((string) ($payload['username'] ?? ''));
         $password = (string) ($payload['password'] ?? '');
+        $throttlePrincipal = strtolower($username === '' ? 'empty-user' : $username);
+
+        if ($this->isAuthTemporarilyBlocked('user_local_api', $throttlePrincipal)) {
+            $this->json([
+                'ok' => false,
+                'message' => 'Demasiados intentos fallidos. Espera unos minutos.',
+            ], 429);
+            return;
+        }
 
         if (!preg_match('/^[A-Za-z0-9._-]{4,60}$/', $username)) {
-            $this->json(['ok' => false, 'message' => 'username invalido'], 422);
+            $this->registerAuthFailure('user_local_api', $throttlePrincipal);
+            $this->json(['ok' => false, 'message' => 'Credenciales invalidas'], 401);
             return;
         }
         if ($password === '') {
-            $this->json(['ok' => false, 'message' => 'password obligatoria'], 422);
+            $this->registerAuthFailure('user_local_api', $throttlePrincipal);
+            $this->json(['ok' => false, 'message' => 'Credenciales invalidas'], 401);
             return;
         }
 
@@ -1279,16 +1330,26 @@ final class App
         $query->execute([':username' => $username]);
         $userRow = $query->fetch();
 
-        if (
-            $userRow === false
-            || (string) ($userRow['password_hash'] ?? '') === ''
-            || !password_verify($password, (string) $userRow['password_hash'])
-        ) {
+        $hash = (string) ($userRow['password_hash'] ?? '');
+        $verification = Security::verifyPasswordWithRehash($password, $hash);
+        if ($userRow === false || !$verification['valid']) {
+            $this->registerAuthFailure('user_local_api', $throttlePrincipal);
             $this->json(['ok' => false, 'message' => 'Credenciales invalidas'], 401);
             return;
         }
 
         $userId = (int) $userRow['id'];
+        $this->clearAuthFailures('user_local_api', $throttlePrincipal);
+        if ($verification['rehash'] !== null) {
+            $rehash = $this->pdo->prepare(
+                'UPDATE users SET password_hash = :password_hash WHERE id = :id'
+            );
+            $rehash->execute([
+                ':password_hash' => $verification['rehash'],
+                ':id' => $userId,
+            ]);
+        }
+
         $user = $this->getUserById($userId);
         if ($user === null) {
             $this->json(['ok' => false, 'message' => 'Usuario no encontrado'], 500);
@@ -3053,6 +3114,35 @@ final class App
         $rawToken = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $rawToken);
 
+        // Reduce attack surface by pruning expired and old excess tokens.
+        $cleanupExpired = $this->pdo->prepare(
+            'DELETE FROM api_tokens
+             WHERE user_id = :user_id
+               AND expires_at <= :now'
+        );
+        $cleanupExpired->execute([
+            ':user_id' => $userId,
+            ':now' => gmdate('c'),
+        ]);
+
+        $trimOld = $this->pdo->prepare(
+            'DELETE FROM api_tokens
+             WHERE user_id = :user_id
+               AND id NOT IN (
+                   SELECT id FROM (
+                       SELECT id
+                       FROM api_tokens
+                       WHERE user_id = :user_id_inner
+                       ORDER BY last_used_at DESC, id DESC
+                       LIMIT 5
+                   ) AS keep_ids
+               )'
+        );
+        $trimOld->execute([
+            ':user_id' => $userId,
+            ':user_id_inner' => $userId,
+        ]);
+
         $expiresAt = gmdate('c', time() + ((int) $this->config['token_ttl_hours'] * 3600));
         $insert = $this->pdo->prepare(
             'INSERT INTO api_tokens (user_id, token_hash, expires_at, created_at, last_used_at)
@@ -3171,7 +3261,168 @@ final class App
 
     private function isAdminAuthenticated(): bool
     {
-        return isset($_SESSION['admin_id']) && (int) $_SESSION['admin_id'] > 0;
+        if (!isset($_SESSION['admin_id']) || (int) $_SESSION['admin_id'] <= 0) {
+            return false;
+        }
+
+        $storedFingerprint = (string) ($_SESSION['admin_fingerprint'] ?? '');
+        $lastSeenAt = (int) ($_SESSION['admin_last_seen'] ?? 0);
+        $expectedFingerprint = $this->adminSessionFingerprint();
+
+        if ($storedFingerprint === '' || !hash_equals($storedFingerprint, $expectedFingerprint)) {
+            $this->clearAdminSession();
+            return false;
+        }
+
+        if ($lastSeenAt <= 0 || (time() - $lastSeenAt) > self::ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) {
+            $this->clearAdminSession();
+            return false;
+        }
+
+        $_SESSION['admin_last_seen'] = time();
+        return true;
+    }
+
+    private function clearAdminSession(): void
+    {
+        $_SESSION = [];
+        if (ini_get('session.use_cookies')) {
+            $params = session_get_cookie_params();
+            setcookie(
+                session_name(),
+                '',
+                time() - 3600,
+                (string) ($params['path'] ?? '/'),
+                (string) ($params['domain'] ?? ''),
+                (bool) ($params['secure'] ?? false),
+                (bool) ($params['httponly'] ?? true)
+            );
+        }
+        session_destroy();
+    }
+
+    private function adminSessionFingerprint(): string
+    {
+        $ip = $this->clientIp();
+        $userAgent = (string) ($_SERVER['HTTP_USER_AGENT'] ?? '');
+        $secret = (string) ($this->config['app_secret_key'] ?? 'agelai-fallback-secret');
+        return hash('sha256', $ip . '|' . $userAgent . '|' . $secret);
+    }
+
+    private function isAuthTemporarilyBlocked(string $scope, string $principal): bool
+    {
+        $key = $this->authThrottleKey($scope, $principal);
+        $query = $this->pdo->prepare(
+            'SELECT window_started_at, hit_count
+             FROM rate_limits
+             WHERE key_name = :key_name
+             LIMIT 1'
+        );
+        $query->execute([':key_name' => $key]);
+        $row = $query->fetch();
+        if ($row === false) {
+            return false;
+        }
+
+        $windowStartedAt = (int) ($row['window_started_at'] ?? 0);
+        $hitCount = (int) ($row['hit_count'] ?? 0);
+        $age = time() - $windowStartedAt;
+        if ($windowStartedAt <= 0 || $age > self::AUTH_FAILURE_WINDOW_SECONDS) {
+            $this->clearAuthFailures($scope, $principal);
+            return false;
+        }
+
+        return $hitCount >= self::AUTH_FAILURE_BLOCK_THRESHOLD;
+    }
+
+    private function registerAuthFailure(string $scope, string $principal): void
+    {
+        $key = $this->authThrottleKey($scope, $principal);
+        $now = time();
+
+        $query = $this->pdo->prepare(
+            'SELECT window_started_at, hit_count
+             FROM rate_limits
+             WHERE key_name = :key_name
+             LIMIT 1'
+        );
+        $query->execute([':key_name' => $key]);
+        $row = $query->fetch();
+
+        if ($row === false) {
+            $insert = $this->pdo->prepare(
+                'INSERT INTO rate_limits (key_name, window_started_at, hit_count)
+                 VALUES (:key_name, :window_started_at, :hit_count)'
+            );
+            $insert->execute([
+                ':key_name' => $key,
+                ':window_started_at' => $now,
+                ':hit_count' => 1,
+            ]);
+            return;
+        }
+
+        $windowStartedAt = (int) ($row['window_started_at'] ?? 0);
+        $hitCount = (int) ($row['hit_count'] ?? 0);
+        if ($windowStartedAt <= 0 || ($now - $windowStartedAt) > self::AUTH_FAILURE_WINDOW_SECONDS) {
+            $update = $this->pdo->prepare(
+                'UPDATE rate_limits
+                 SET window_started_at = :window_started_at,
+                     hit_count = :hit_count
+                 WHERE key_name = :key_name'
+            );
+            $update->execute([
+                ':window_started_at' => $now,
+                ':hit_count' => 1,
+                ':key_name' => $key,
+            ]);
+            return;
+        }
+
+        $update = $this->pdo->prepare(
+            'UPDATE rate_limits
+             SET hit_count = :hit_count
+             WHERE key_name = :key_name'
+        );
+        $update->execute([
+            ':hit_count' => $hitCount + 1,
+            ':key_name' => $key,
+        ]);
+    }
+
+    private function clearAuthFailures(string $scope, string $principal): void
+    {
+        $key = $this->authThrottleKey($scope, $principal);
+        $delete = $this->pdo->prepare('DELETE FROM rate_limits WHERE key_name = :key_name');
+        $delete->execute([':key_name' => $key]);
+    }
+
+    private function authThrottleKey(string $scope, string $principal): string
+    {
+        $normalizedScope = trim(strtolower($scope));
+        $normalizedPrincipal = trim(strtolower($principal));
+        $principalHash = hash('sha256', $normalizedPrincipal);
+        $ipHash = hash('sha256', $this->clientIp());
+        return 'auth_fail|' . $normalizedScope . '|' . $principalHash . '|' . $ipHash;
+    }
+
+    private function clientIp(): string
+    {
+        $forwardedFor = (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
+        if ($forwardedFor !== '') {
+            $candidates = explode(',', $forwardedFor);
+            $first = trim((string) ($candidates[0] ?? ''));
+            if (filter_var($first, FILTER_VALIDATE_IP) !== false) {
+                return $first;
+            }
+        }
+
+        $remote = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        if (filter_var($remote, FILTER_VALIDATE_IP) !== false) {
+            return $remote;
+        }
+
+        return '0.0.0.0';
     }
 
     private function revokeUserApiTokens(int $userId): void

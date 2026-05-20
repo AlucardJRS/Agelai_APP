@@ -39,6 +39,14 @@ Este repositorio arranca desde cero para construir:
 
 Desde el dashboard puedes editar nombre, permisos/modulos, resetear password local, bloquear/desactivar y eliminar usuarios.
 
+## Seguridad (implementada)
+
+- MariaDB con consultas preparadas PDO y emulacion desactivada.
+- Login admin/local con bloqueo temporal por intentos fallidos.
+- Passwords hasheadas con perfil fuerte y rehash automatico.
+- Sesiones admin reforzadas (fingerprint + timeout + cookies seguras).
+- Cabeceras HTTP endurecidas y politica CSP restrictiva.
+
 ## Siguiente Paso
 
 Revisa [docs/setup_local.md](C:\Users\mtrfu\Documents\Agelai_Dietas\docs\setup_local.md) para arrancar el entorno.

@@ -116,13 +116,17 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 - CSRF token en formularios del dashboard.
 - Hash de password admin (`password_hash`).
 - Hash de password para usuarios locales (`password_hash`).
+- Rehash automatico de passwords a perfil fuerte (Argon2id cuando esta disponible).
 - Tokens API hasheados en base de datos.
 - Cabeceras HTTP de seguridad.
+- Cabeceras extra: CSP reforzada, COOP/CORP, no-cache y HSTS en HTTPS.
 - Limitador de peticiones por IP/ruta.
+- Bloqueo temporal anti-fuerza-bruta por usuario+IP en login admin y login local.
 - Escapado HTML en vistas (mitigacion XSS).
 - Tokens Google cifrados en MariaDB con AES-256-GCM.
 - Estados OAuth efimeros (anti-CSRF en callback OAuth).
 - Log de integraciones (OAuth/SMTP/Calendar) para auditoria.
+- Endurecimiento de sesion admin: fingerprint, timeout por inactividad, cookie Strict HttpOnly.
 - Regla de cancelacion minima de 2 horas.
 - Aprobacion manual admin obligatoria en todas las reservas.
 
