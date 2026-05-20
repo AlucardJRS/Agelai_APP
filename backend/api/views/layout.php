@@ -7,13 +7,18 @@ declare(strict_types=1);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= Security::e($title); ?> - Club Agelai</title>
+    <link rel="icon" type="image/png" href="/assets/brand/agelai-logo.png">
+    <link rel="apple-touch-icon" href="/assets/brand/agelai-logo.png">
     <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
 <header class="topbar">
-    <div class="brand">
-        <strong>Club Agelai</strong>
-        <span>Dashboard</span>
+    <div class="brand brand-lockup">
+        <img src="/assets/brand/agelai-logo.png" alt="Logo Club Agelai" class="brand-logo">
+        <div class="brand-copy">
+            <strong>Club Agelai</strong>
+            <span class="brand-subtitle">Dashboard</span>
+        </div>
     </div>
     <?php if ($adminUsername !== ''): ?>
         <div class="admin-actions">

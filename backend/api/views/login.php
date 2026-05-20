@@ -2,6 +2,9 @@
 declare(strict_types=1);
 ?>
 <section class="card">
+    <div class="login-brand">
+        <img src="/assets/brand/agelai-logo.png" alt="Logo Club Agelai" class="login-logo">
+    </div>
     <h1>Acceso Administrador</h1>
     <p>Login local para gestionar usuarios, accesos, actividades y reservas.</p>
     <p class="small-note">Credenciales iniciales: <code>admin</code> / <code>Admin12345!</code></p>
