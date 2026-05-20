@@ -18,6 +18,7 @@ function Convert-SecureToPlainText {
 function Escape-EnvValue {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Value
     )
 

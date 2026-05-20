@@ -259,6 +259,16 @@ final class App
             return;
         }
 
+        if ($method === 'POST' && $path === '/dashboard/users/create') {
+            $this->dashboardUsersCreate();
+            return;
+        }
+
+        if ($method === 'POST' && $path === '/dashboard/users/block') {
+            $this->dashboardUsersBlock();
+            return;
+        }
+
         if ($method === 'GET' && $path === '/dashboard/activities') {
             $this->dashboardActivities();
             return;
@@ -463,6 +473,10 @@ final class App
                 }
             }
 
+            if ($status === 'blocked') {
+                $this->revokeUserApiTokens($userId);
+            }
+
             $this->pdo->commit();
         } catch (\Throwable $exception) {
             $this->pdo->rollBack();
@@ -472,6 +486,146 @@ final class App
         }
 
         $this->setFlash('success', 'Usuario actualizado correctamente.');
+        header('Location: /dashboard/users');
+    }
+
+    private function dashboardUsersCreate(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $fullName = trim((string) ($_POST['full_name'] ?? ''));
+        $email = trim((string) ($_POST['email'] ?? ''));
+        $googleIdInput = trim((string) ($_POST['google_id'] ?? ''));
+        $status = (string) ($_POST['status'] ?? 'pending');
+        $allowedStatus = ['pending', 'active', 'blocked'];
+        $moduleIdsRaw = $_POST['module_ids'] ?? [];
+
+        if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
+            $this->setFlash('error', 'Nombre invalido para nuevo usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $this->setFlash('error', 'Email invalido para nuevo usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if (!in_array($status, $allowedStatus, true)) {
+            $this->setFlash('error', 'Estado invalido para nuevo usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $googleId = $googleIdInput;
+        if ($googleId !== '' && !preg_match('/^[A-Za-z0-9._-]{4,128}$/', $googleId)) {
+            $this->setFlash('error', 'Google ID invalido. Usa solo letras, numeros, punto, guion o guion bajo.');
+            header('Location: /dashboard/users');
+            return;
+        }
+        if ($googleId === '') {
+            // Placeholder ID for manual creation; will be replaced when the user logs in with Google.
+            $googleId = 'manual_local_' . bin2hex(random_bytes(8));
+        }
+
+        $moduleIds = [];
+        if (is_array($moduleIdsRaw)) {
+            foreach ($moduleIdsRaw as $moduleIdRaw) {
+                $moduleId = (int) $moduleIdRaw;
+                if ($moduleId > 0) {
+                    $moduleIds[] = $moduleId;
+                }
+            }
+        }
+        $moduleIds = array_values(array_unique($moduleIds));
+
+        if ($status === 'active' && count($moduleIds) === 0) {
+            $status = 'pending';
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $insertUser = $this->pdo->prepare(
+                'INSERT INTO users (google_id, email, full_name, status, created_at)
+                 VALUES (:google_id, :email, :full_name, :status, :created_at)'
+            );
+            $insertUser->execute([
+                ':google_id' => $googleId,
+                ':email' => $email,
+                ':full_name' => $fullName,
+                ':status' => $status,
+                ':created_at' => gmdate('c'),
+            ]);
+            $userId = (int) $this->pdo->lastInsertId();
+
+            if (count($moduleIds) > 0) {
+                $insertModule = $this->pdo->prepare(
+                    'INSERT IGNORE INTO user_modules (user_id, module_id) VALUES (:user_id, :module_id)'
+                );
+                foreach ($moduleIds as $moduleId) {
+                    $insertModule->execute([
+                        ':user_id' => $userId,
+                        ':module_id' => $moduleId,
+                    ]);
+                }
+            }
+
+            if ($status === 'blocked') {
+                $this->revokeUserApiTokens($userId);
+            }
+
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $message = 'No se pudo crear el usuario.';
+            if (str_contains(strtolower($exception->getMessage()), 'duplicate')) {
+                $message = 'No se pudo crear: email o Google ID ya existen.';
+            }
+            $this->setFlash('error', $message);
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->setFlash('success', 'Usuario creado correctamente.');
+        header('Location: /dashboard/users');
+    }
+
+    private function dashboardUsersBlock(): void
+    {
+        if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
+            $this->setFlash('error', 'Token CSRF invalido.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $userId = (int) ($_POST['user_id'] ?? 0);
+        if ($userId <= 0) {
+            $this->setFlash('error', 'Usuario invalido para bloqueo.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $update = $this->pdo->prepare('UPDATE users SET status = :status WHERE id = :id');
+            $update->execute([
+                ':status' => 'blocked',
+                ':id' => $userId,
+            ]);
+
+            $this->revokeUserApiTokens($userId);
+            $this->pdo->commit();
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            $this->setFlash('error', 'No se pudo bloquear el usuario.');
+            header('Location: /dashboard/users');
+            return;
+        }
+
+        $this->setFlash('success', 'Usuario bloqueado correctamente.');
         header('Location: /dashboard/users');
     }
 
@@ -898,7 +1052,6 @@ final class App
                 ]);
             }
 
-            $token = $this->issueToken($userId);
             $this->pdo->commit();
         } catch (\Throwable $exception) {
             $this->pdo->rollBack();
@@ -911,6 +1064,15 @@ final class App
             $this->json(['ok' => false, 'message' => 'Usuario no encontrado'], 500);
             return;
         }
+        if ((string) ($user['status'] ?? '') === 'blocked') {
+            $this->json([
+                'ok' => false,
+                'message' => 'Tu cuenta esta bloqueada. Contacta con administracion.',
+            ], 403);
+            return;
+        }
+
+        $token = $this->issueToken($userId);
 
         $userModules = $this->getUserModules($userId);
         $this->json([
@@ -1402,6 +1564,16 @@ final class App
                         ':full_name' => $fullName,
                         ':id' => $userId,
                     ]);
+                }
+
+                $statusQuery = $this->pdo->prepare('SELECT status FROM users WHERE id = :id LIMIT 1');
+                $statusQuery->execute([':id' => $userId]);
+                $statusRow = $statusQuery->fetch();
+                if ($statusRow === false) {
+                    throw new \RuntimeException('No se pudo leer el estado del usuario.');
+                }
+                if ((string) ($statusRow['status'] ?? '') === 'blocked') {
+                    throw new \RuntimeException('Tu cuenta esta bloqueada. Contacta con administracion.');
                 }
 
                 $apiToken = $this->issueToken($userId);
@@ -2630,6 +2802,12 @@ final class App
     private function isAdminAuthenticated(): bool
     {
         return isset($_SESSION['admin_id']) && (int) $_SESSION['admin_id'] > 0;
+    }
+
+    private function revokeUserApiTokens(int $userId): void
+    {
+        $delete = $this->pdo->prepare('DELETE FROM api_tokens WHERE user_id = :user_id');
+        $delete->execute([':user_id' => $userId]);
     }
 
     private function count(string $sql): int
