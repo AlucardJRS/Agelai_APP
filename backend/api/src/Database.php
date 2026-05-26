@@ -111,6 +111,10 @@ final class Database
                     google_id VARCHAR(128) NOT NULL,
                     email VARCHAR(180) NOT NULL,
                     full_name VARCHAR(120) NOT NULL,
+                    first_name VARCHAR(80) NOT NULL DEFAULT \'\',
+                    last_name VARCHAR(120) NOT NULL DEFAULT \'\',
+                    phone VARCHAR(30) NOT NULL DEFAULT \'\',
+                    address VARCHAR(220) NOT NULL DEFAULT \'\',
                     username VARCHAR(60) DEFAULT NULL,
                     password_hash VARCHAR(255) DEFAULT NULL,
                     auth_provider VARCHAR(20) NOT NULL DEFAULT \'google\',
@@ -119,7 +123,9 @@ final class Database
                     PRIMARY KEY (id),
                     UNIQUE KEY uniq_users_google_id (google_id),
                     UNIQUE KEY uniq_users_email (email),
-                    UNIQUE KEY uniq_users_username (username)
+                    UNIQUE KEY uniq_users_username (username),
+                    KEY idx_users_phone (phone),
+                    KEY idx_users_name (first_name, last_name)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
 
@@ -223,6 +229,30 @@ final class Database
                      ADD COLUMN username VARCHAR(60) DEFAULT NULL AFTER full_name'
                 );
             }
+            if (!$this->columnExists('users', 'first_name')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN first_name VARCHAR(80) NOT NULL DEFAULT \'\' AFTER full_name'
+                );
+            }
+            if (!$this->columnExists('users', 'last_name')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN last_name VARCHAR(120) NOT NULL DEFAULT \'\' AFTER first_name'
+                );
+            }
+            if (!$this->columnExists('users', 'phone')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN phone VARCHAR(30) NOT NULL DEFAULT \'\' AFTER last_name'
+                );
+            }
+            if (!$this->columnExists('users', 'address')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD COLUMN address VARCHAR(220) NOT NULL DEFAULT \'\' AFTER phone'
+                );
+            }
             if (!$this->columnExists('users', 'password_hash')) {
                 $this->pdo->exec(
                     'ALTER TABLE users
@@ -241,6 +271,30 @@ final class Database
                      ADD UNIQUE KEY uniq_users_username (username)'
                 );
             }
+            if (!$this->indexExists('users', 'idx_users_phone')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD KEY idx_users_phone (phone)'
+                );
+            }
+            if (!$this->indexExists('users', 'idx_users_name')) {
+                $this->pdo->exec(
+                    'ALTER TABLE users
+                     ADD KEY idx_users_name (first_name, last_name)'
+                );
+            }
+
+            // Backfill split-name fields for existing records.
+            $this->pdo->exec(
+                'UPDATE users
+                 SET first_name = TRIM(SUBSTRING_INDEX(full_name, \' \', 1))
+                 WHERE first_name = \'\''
+            );
+            $this->pdo->exec(
+                'UPDATE users
+                 SET last_name = TRIM(SUBSTR(full_name, CHAR_LENGTH(SUBSTRING_INDEX(full_name, \' \', 1)) + 1))
+                 WHERE last_name = \'\''
+            );
 
             // Keep auth_provider consistent for existing records after migration.
             $this->pdo->exec(
@@ -461,6 +515,10 @@ final class Database
         $username = trim((string) ($localUserSeed['username'] ?? 'clubagelai'));
         $password = (string) ($localUserSeed['password'] ?? 'clubagelai');
         $fullName = trim((string) ($localUserSeed['full_name'] ?? 'Club Agelai Usuario Pruebas'));
+        $firstName = trim((string) ($localUserSeed['first_name'] ?? 'Club'));
+        $lastName = trim((string) ($localUserSeed['last_name'] ?? 'Agelai Usuario Pruebas'));
+        $phone = trim((string) ($localUserSeed['phone'] ?? ''));
+        $address = trim((string) ($localUserSeed['address'] ?? ''));
         $email = trim((string) ($localUserSeed['email'] ?? 'clubagelai@local.agelai'));
         $status = trim((string) ($localUserSeed['status'] ?? 'pending'));
 
@@ -471,6 +529,18 @@ final class Database
             return;
         }
         if ($fullName === '' || mb_strlen($fullName) > 120) {
+            return;
+        }
+        if ($firstName === '' || mb_strlen($firstName) > 80) {
+            return;
+        }
+        if ($lastName === '' || mb_strlen($lastName) > 120) {
+            return;
+        }
+        if ($phone !== '' && mb_strlen($phone) > 30) {
+            return;
+        }
+        if ($address !== '' && mb_strlen($address) > 220) {
             return;
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -502,13 +572,17 @@ final class Database
         }
 
         $insert = $this->pdo->prepare(
-            'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
-             VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
+            'INSERT INTO users (google_id, email, full_name, first_name, last_name, phone, address, username, password_hash, auth_provider, status, created_at)
+             VALUES (:google_id, :email, :full_name, :first_name, :last_name, :phone, :address, :username, :password_hash, :auth_provider, :status, :created_at)'
         );
         $insert->execute([
             ':google_id' => $googleId,
             ':email' => $email,
             ':full_name' => $fullName,
+            ':first_name' => $firstName,
+            ':last_name' => $lastName,
+            ':phone' => $phone,
+            ':address' => $address,
             ':username' => $username,
             ':password_hash' => Security::hashPassword($password),
             ':auth_provider' => 'local',

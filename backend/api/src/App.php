@@ -10,6 +10,8 @@ final class App
     private const AUTH_FAILURE_WINDOW_SECONDS = 900;
     private const AUTH_FAILURE_BLOCK_THRESHOLD = 5;
     private const ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 1800;
+    private const AUTH_FAILURE_DELAY_MIN_US = 200000;
+    private const AUTH_FAILURE_DELAY_MAX_US = 450000;
 
     public function __construct(
         private readonly \PDO $pdo,
@@ -246,6 +248,15 @@ final class App
 
     private function handleDashboardRequest(string $method, string $path): void
     {
+        if ($method === 'POST' && str_starts_with($path, '/dashboard/')) {
+            if (!$this->isSameOriginFormRequest()) {
+                $this->setFlash('error', 'Solicitud rechazada por seguridad de origen.');
+                $redirectPath = $path === '/dashboard/login' ? '/dashboard/login' : '/dashboard';
+                header('Location: ' . $redirectPath);
+                return;
+            }
+        }
+
         if ($path === '/') {
             header('Location: /dashboard');
             return;
@@ -277,7 +288,22 @@ final class App
         }
 
         if ($method === 'GET' && $path === '/dashboard/users') {
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/users/altas-bajas') {
             $this->dashboardUsers();
+            return;
+        }
+
+        if ($method === 'GET' && preg_match('#^/dashboard/users/altas-bajas/(\d+)$#', $path, $matches) === 1) {
+            $this->dashboardUserDetail((int) $matches[1]);
+            return;
+        }
+
+        if ($method === 'GET' && $path === '/dashboard/users/movimientos') {
+            $this->dashboardUsersMovements();
             return;
         }
 
@@ -383,6 +409,7 @@ final class App
         $throttlePrincipal = strtolower($username === '' ? 'empty-admin' : $username);
 
         if ($this->isAuthTemporarilyBlocked('admin_dashboard', $throttlePrincipal)) {
+            $this->applyAuthFailureDelay();
             $this->setFlash('error', 'Demasiados intentos fallidos. Espera unos minutos.');
             header('Location: /dashboard/login');
             return;
@@ -390,7 +417,23 @@ final class App
 
         if ($username === '' || $password === '') {
             $this->registerAuthFailure('admin_dashboard', $throttlePrincipal);
+            $this->applyAuthFailureDelay();
             $this->setFlash('error', 'Usuario y password son obligatorios.');
+            header('Location: /dashboard/login');
+            return;
+        }
+
+        if (!preg_match('/^[A-Za-z0-9._-]{3,60}$/', $username)) {
+            $this->registerAuthFailure('admin_dashboard', $throttlePrincipal);
+            $this->applyAuthFailureDelay();
+            $this->setFlash('error', 'Credenciales invalidas.');
+            header('Location: /dashboard/login');
+            return;
+        }
+        if (strlen($password) < 8 || strlen($password) > 120) {
+            $this->registerAuthFailure('admin_dashboard', $throttlePrincipal);
+            $this->applyAuthFailureDelay();
+            $this->setFlash('error', 'Credenciales invalidas.');
             header('Location: /dashboard/login');
             return;
         }
@@ -403,6 +446,7 @@ final class App
         $verification = Security::verifyPasswordWithRehash($password, $hash);
         if ($admin === false || !$verification['valid']) {
             $this->registerAuthFailure('admin_dashboard', $throttlePrincipal);
+            $this->applyAuthFailureDelay();
             $this->setFlash('error', 'Credenciales invalidas.');
             header('Location: /dashboard/login');
             return;
@@ -461,25 +505,96 @@ final class App
 
     private function dashboardUsers(): void
     {
+        $searchFirstName = trim((string) ($_GET['nombre'] ?? ''));
+        $searchLastName = trim((string) ($_GET['apellidos'] ?? ''));
+        $searchPhone = trim((string) ($_GET['movil'] ?? ''));
+
         $moduleRows = $this->pdo->query('SELECT id, code, name FROM modules ORDER BY name ASC')->fetchAll();
-        $usersRaw = $this->pdo->query(
+
+        $where = [];
+        $params = [];
+        if ($searchFirstName !== '') {
+            $where[] = 'u.first_name LIKE :search_first_name';
+            $params[':search_first_name'] = '%' . mb_substr($searchFirstName, 0, 80) . '%';
+        }
+        if ($searchLastName !== '') {
+            $where[] = 'u.last_name LIKE :search_last_name';
+            $params[':search_last_name'] = '%' . mb_substr($searchLastName, 0, 120) . '%';
+        }
+        if ($searchPhone !== '') {
+            $where[] = 'u.phone LIKE :search_phone';
+            $params[':search_phone'] = '%' . mb_substr($searchPhone, 0, 30) . '%';
+        }
+
+        $sql = 'SELECT
+                    u.id,
+                    u.first_name,
+                    u.last_name,
+                    u.phone,
+                    u.status,
+                    u.created_at
+                FROM users u';
+        if (count($where) > 0) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY u.created_at DESC';
+
+        $usersQuery = $this->pdo->prepare($sql);
+        $usersQuery->execute($params);
+        $users = $usersQuery->fetchAll();
+
+        $this->render('users', [
+            'title' => 'Usuarios y Permisos',
+            'users' => $users,
+            'modules' => $moduleRows,
+            'usersSection' => 'altas-bajas',
+            'filters' => [
+                'nombre' => $searchFirstName,
+                'apellidos' => $searchLastName,
+                'movil' => $searchPhone,
+            ],
+        ]);
+    }
+
+    private function dashboardUserDetail(int $userId): void
+    {
+        if ($userId <= 0) {
+            $this->setFlash('error', 'Usuario invalido.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+
+        $query = $this->pdo->prepare(
             'SELECT
-                id,
-                full_name,
-                email,
-                google_id,
-                username,
-                auth_provider,
-                status,
-                created_at,
+                u.id,
+                u.full_name,
+                u.first_name,
+                u.last_name,
+                u.phone,
+                u.address,
+                u.email,
+                u.google_id,
+                u.username,
+                u.auth_provider,
+                u.status,
+                u.created_at,
                 CASE
-                    WHEN password_hash IS NULL OR password_hash = \'\' THEN 0
+                    WHEN u.password_hash IS NULL OR u.password_hash = \'\' THEN 0
                     ELSE 1
                 END AS has_local_password
-             FROM users
-             ORDER BY created_at DESC'
-        )->fetchAll();
+             FROM users u
+             WHERE u.id = :id
+             LIMIT 1'
+        );
+        $query->execute([':id' => $userId]);
+        $user = $query->fetch();
+        if ($user === false) {
+            $this->setFlash('error', 'Usuario no encontrado.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
 
+        $moduleRows = $this->pdo->query('SELECT id, code, name FROM modules ORDER BY name ASC')->fetchAll();
         $moduleStmt = $this->pdo->prepare(
             'SELECT m.id, m.code, m.name
              FROM user_modules um
@@ -487,19 +602,241 @@ final class App
              WHERE um.user_id = :user_id
              ORDER BY m.name ASC'
         );
+        $moduleStmt->execute([':user_id' => $userId]);
+        $user['modules'] = $moduleStmt->fetchAll();
 
-        $users = [];
-        foreach ($usersRaw as $userRow) {
-            $moduleStmt->execute([':user_id' => (int) $userRow['id']]);
-            $userModules = $moduleStmt->fetchAll();
-            $userRow['modules'] = $userModules;
-            $users[] = $userRow;
+        $this->render('user_detail', [
+            'title' => 'Ficha de Usuario',
+            'user' => $user,
+            'modules' => $moduleRows,
+            'usersSection' => 'altas-bajas',
+        ]);
+    }
+
+    private function dashboardUsersMovements(): void
+    {
+        $searchFirstName = trim((string) ($_GET['nombre'] ?? ''));
+        $searchLastName = trim((string) ($_GET['apellidos'] ?? ''));
+        $searchPhone = trim((string) ($_GET['movil'] ?? ''));
+
+        $where = [];
+        $params = [];
+        if ($searchFirstName !== '') {
+            $where[] = 'u.first_name LIKE :search_first_name';
+            $params[':search_first_name'] = '%' . mb_substr($searchFirstName, 0, 80) . '%';
+        }
+        if ($searchLastName !== '') {
+            $where[] = 'u.last_name LIKE :search_last_name';
+            $params[':search_last_name'] = '%' . mb_substr($searchLastName, 0, 120) . '%';
+        }
+        if ($searchPhone !== '') {
+            $where[] = 'u.phone LIKE :search_phone';
+            $params[':search_phone'] = '%' . mb_substr($searchPhone, 0, 30) . '%';
+        }
+        $whereSql = count($where) > 0 ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+        $allowedReservationStates = [
+            'pending_user_confirm',
+            'pending_admin_approval',
+            'confirmed',
+            'waitlist',
+        ];
+        $statesSql = '\'' . implode('\', \'', $allowedReservationStates) . '\'';
+
+        $usersQuery = $this->pdo->prepare(
+            "SELECT
+                u.id,
+                u.first_name,
+                u.last_name,
+                u.phone,
+                u.address,
+                u.email,
+                u.status,
+                u.created_at,
+                COUNT(r.id) AS reservations_total,
+                SUM(CASE WHEN r.status = 'confirmed' THEN 1 ELSE 0 END) AS reservations_confirmed,
+                SUM(CASE WHEN r.status = 'pending_admin_approval' THEN 1 ELSE 0 END) AS reservations_pending_admin,
+                MAX(r.created_at) AS last_movement_at
+             FROM users u
+             LEFT JOIN reservations r
+                ON r.user_id = u.id
+               AND r.status IN ($statesSql)
+             $whereSql
+             GROUP BY u.id
+             ORDER BY reservations_total DESC, u.created_at DESC"
+        );
+        $usersQuery->execute($params);
+        $movementUsers = $usersQuery->fetchAll();
+
+        $favoriteQuery = $this->pdo->prepare(
+            "SELECT
+                r.user_id,
+                a.title,
+                COUNT(*) AS total
+             FROM reservations r
+             INNER JOIN users u ON u.id = r.user_id
+             INNER JOIN activities a ON a.id = r.activity_id
+             $whereSql
+             " . (count($where) > 0 ? 'AND' : 'WHERE') . " r.status IN ($statesSql)
+             GROUP BY r.user_id, a.title
+             ORDER BY r.user_id ASC, total DESC, a.title ASC"
+        );
+        $favoriteQuery->execute($params);
+        $favoriteByUser = [];
+        foreach ($favoriteQuery->fetchAll() as $row) {
+            $userId = (int) $row['user_id'];
+            if (!isset($favoriteByUser[$userId])) {
+                $favoriteByUser[$userId] = (string) $row['title'];
+            }
         }
 
-        $this->render('users', [
-            'title' => 'Usuarios y Permisos',
-            'users' => $users,
-            'modules' => $moduleRows,
+        $timeRowsQuery = $this->pdo->prepare(
+            "SELECT
+                r.user_id,
+                a.starts_at,
+                a.title,
+                a.module_code
+             FROM reservations r
+             INNER JOIN users u ON u.id = r.user_id
+             INNER JOIN activities a ON a.id = r.activity_id
+             $whereSql
+             " . (count($where) > 0 ? 'AND' : 'WHERE') . " r.status IN ($statesSql)"
+        );
+        $timeRowsQuery->execute($params);
+        $timeRows = $timeRowsQuery->fetchAll();
+
+        $slotTotals = [
+            'Manana (06-12)' => 0,
+            'Tarde (12-17)' => 0,
+            'Noche (17-22)' => 0,
+            'Madrugada (22-06)' => 0,
+        ];
+        $peakHours = [];
+        for ($hour = 0; $hour < 24; $hour++) {
+            $peakHours[sprintf('%02d:00', $hour)] = 0;
+        }
+        $slotByUserCounters = [];
+        $activityTotals = [];
+        $productTotals = [];
+
+        foreach ($timeRows as $timeRow) {
+            $userId = (int) $timeRow['user_id'];
+            $localDate = $this->toLocalDate((string) $timeRow['starts_at']);
+            if ($localDate === null) {
+                continue;
+            }
+
+            $hour = (int) $localDate->format('H');
+            $slotLabel = $hour >= 6 && $hour < 12
+                ? 'Manana (06-12)'
+                : ($hour >= 12 && $hour < 17
+                    ? 'Tarde (12-17)'
+                    : ($hour >= 17 && $hour < 22 ? 'Noche (17-22)' : 'Madrugada (22-06)'));
+
+            $slotTotals[$slotLabel] = ($slotTotals[$slotLabel] ?? 0) + 1;
+            $hourKey = sprintf('%02d:00', $hour);
+            $peakHours[$hourKey] = ($peakHours[$hourKey] ?? 0) + 1;
+
+            if (!isset($slotByUserCounters[$userId])) {
+                $slotByUserCounters[$userId] = [];
+            }
+            $slotByUserCounters[$userId][$slotLabel] = ($slotByUserCounters[$userId][$slotLabel] ?? 0) + 1;
+
+            $activityTitle = trim((string) $timeRow['title']);
+            if ($activityTitle !== '') {
+                $activityTotals[$activityTitle] = ($activityTotals[$activityTitle] ?? 0) + 1;
+            }
+
+            $moduleCode = (string) $timeRow['module_code'];
+            $moduleLabel = (string) ((array) $this->config['allowed_modules'])[$moduleCode] ?? $moduleCode;
+            if ($moduleLabel !== '') {
+                $productTotals[$moduleLabel] = ($productTotals[$moduleLabel] ?? 0) + 1;
+            }
+        }
+
+        $preferredSlotByUser = [];
+        foreach ($slotByUserCounters as $userId => $counter) {
+            arsort($counter);
+            $preferredSlotByUser[(int) $userId] = (string) array_key_first($counter);
+        }
+
+        arsort($activityTotals);
+        $topActivities = [];
+        foreach (array_slice($activityTotals, 0, 8, true) as $label => $total) {
+            $topActivities[] = [
+                'label' => $label,
+                'total' => (int) $total,
+            ];
+        }
+
+        arsort($productTotals);
+        $topProducts = [];
+        foreach (array_slice($productTotals, 0, 8, true) as $label => $total) {
+            $topProducts[] = [
+                'label' => $label,
+                'total' => (int) $total,
+            ];
+        }
+
+        $usersWithBehavior = [];
+        $totReservations = 0;
+        $totConfirmed = 0;
+        $totPendingAdmin = 0;
+        foreach ($movementUsers as $row) {
+            $userId = (int) $row['id'];
+            $reservationsTotal = (int) ($row['reservations_total'] ?? 0);
+            $reservationsConfirmed = (int) ($row['reservations_confirmed'] ?? 0);
+            $reservationsPendingAdmin = (int) ($row['reservations_pending_admin'] ?? 0);
+
+            $totReservations += $reservationsTotal;
+            $totConfirmed += $reservationsConfirmed;
+            $totPendingAdmin += $reservationsPendingAdmin;
+
+            $usersWithBehavior[] = [
+                'id' => $userId,
+                'first_name' => (string) $row['first_name'],
+                'last_name' => (string) $row['last_name'],
+                'phone' => (string) $row['phone'],
+                'address' => (string) $row['address'],
+                'email' => (string) $row['email'],
+                'status' => (string) $row['status'],
+                'reservations_total' => $reservationsTotal,
+                'reservations_confirmed' => $reservationsConfirmed,
+                'reservations_pending_admin' => $reservationsPendingAdmin,
+                'last_movement_at' => (string) ($row['last_movement_at'] ?? ''),
+                'favorite_activity' => (string) ($favoriteByUser[$userId] ?? 'Sin datos'),
+                'preferred_slot' => (string) ($preferredSlotByUser[$userId] ?? 'Sin datos'),
+            ];
+        }
+
+        arsort($peakHours);
+        $peakHoursTop = [];
+        foreach (array_slice($peakHours, 0, 6, true) as $hourLabel => $total) {
+            $peakHoursTop[] = [
+                'label' => $hourLabel,
+                'total' => (int) $total,
+            ];
+        }
+
+        $this->render('users_movements', [
+            'title' => 'Usuarios - Movimientos',
+            'usersSection' => 'movimientos',
+            'filters' => [
+                'nombre' => $searchFirstName,
+                'apellidos' => $searchLastName,
+                'movil' => $searchPhone,
+            ],
+            'summary' => [
+                'users_analyzed' => count($usersWithBehavior),
+                'reservations_total' => $totReservations,
+                'reservations_confirmed' => $totConfirmed,
+                'reservations_pending_admin' => $totPendingAdmin,
+            ],
+            'slot_totals' => $slotTotals,
+            'top_activities' => $topActivities,
+            'top_products' => $topProducts,
+            'peak_hours' => $peakHoursTop,
+            'users_movements' => $usersWithBehavior,
         ]);
     }
 
@@ -507,12 +844,16 @@ final class App
     {
         if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
             $this->setFlash('error', 'Token CSRF invalido.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $userId = (int) ($_POST['user_id'] ?? 0);
-        $fullName = trim((string) ($_POST['full_name'] ?? ''));
+        $firstName = trim((string) ($_POST['first_name'] ?? ''));
+        $lastName = trim((string) ($_POST['last_name'] ?? ''));
+        $phone = trim((string) ($_POST['phone'] ?? ''));
+        $address = trim((string) ($_POST['address'] ?? ''));
+        $fullName = trim($firstName . ' ' . $lastName);
         $email = trim((string) ($_POST['email'] ?? ''));
         $googleIdInput = trim((string) ($_POST['google_id'] ?? ''));
         $usernameInput = trim((string) ($_POST['username'] ?? ''));
@@ -522,27 +863,47 @@ final class App
 
         if ($userId <= 0 || !in_array($status, $allowedStatus, true)) {
             $this->setFlash('error', 'Datos de usuario invalidos.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
-        if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
+        if ($firstName === '' || mb_strlen($firstName) < 2 || mb_strlen($firstName) > 80) {
             $this->setFlash('error', 'Nombre invalido para usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if ($lastName === '' || mb_strlen($lastName) < 2 || mb_strlen($lastName) > 120) {
+            $this->setFlash('error', 'Apellidos invalidos para usuario.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if (!preg_match('/^[0-9+\s().-]{6,30}$/', $phone)) {
+            $this->setFlash('error', 'Movil invalido. Usa solo numeros y simbolos telefonicos.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if ($address === '' || mb_strlen($address) < 5 || mb_strlen($address) > 220) {
+            $this->setFlash('error', 'Direccion invalida para usuario.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if ($fullName === '' || mb_strlen($fullName) > 120) {
+            $this->setFlash('error', 'Nombre completo invalido para usuario.');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $this->setFlash('error', 'Email invalido para usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if ($googleIdInput !== '' && !preg_match('/^[A-Za-z0-9._-]{4,128}$/', $googleIdInput)) {
             $this->setFlash('error', 'Google ID invalido. Usa solo letras, numeros, punto, guion o guion bajo.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if ($usernameInput !== '' && !preg_match('/^[A-Za-z0-9._-]{4,60}$/', $usernameInput)) {
             $this->setFlash('error', 'Username invalido. Usa 4-60 caracteres: letras, numeros, punto, guion o guion bajo.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         $googleId = $googleIdInput === '' ? 'manual_local_' . bin2hex(random_bytes(8)) : $googleIdInput;
@@ -587,6 +948,10 @@ final class App
             $updateUser = $this->pdo->prepare(
                 'UPDATE users
                  SET full_name = :full_name,
+                     first_name = :first_name,
+                     last_name = :last_name,
+                     phone = :phone,
+                     address = :address,
                      email = :email,
                      google_id = :google_id,
                      username = :username,
@@ -596,6 +961,10 @@ final class App
             );
             $updateUser->execute([
                 ':full_name' => $fullName,
+                ':first_name' => $firstName,
+                ':last_name' => $lastName,
+                ':phone' => $phone,
+                ':address' => $address,
                 ':email' => $email,
                 ':google_id' => $googleId,
                 ':username' => $username,
@@ -633,23 +1002,27 @@ final class App
                 $message = 'No se pudo actualizar: email, Google ID o username ya existen.';
             }
             $this->setFlash('error', $message);
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $this->setFlash('success', 'Usuario actualizado correctamente.');
-        header('Location: /dashboard/users');
+        header('Location: /dashboard/users/altas-bajas');
     }
 
     private function dashboardUsersCreate(): void
     {
         if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
             $this->setFlash('error', 'Token CSRF invalido.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
-        $fullName = trim((string) ($_POST['full_name'] ?? ''));
+        $firstName = trim((string) ($_POST['first_name'] ?? ''));
+        $lastName = trim((string) ($_POST['last_name'] ?? ''));
+        $phone = trim((string) ($_POST['phone'] ?? ''));
+        $address = trim((string) ($_POST['address'] ?? ''));
+        $fullName = trim($firstName . ' ' . $lastName);
         $email = trim((string) ($_POST['email'] ?? ''));
         $googleIdInput = trim((string) ($_POST['google_id'] ?? ''));
         $usernameInput = trim((string) ($_POST['username'] ?? ''));
@@ -658,41 +1031,61 @@ final class App
         $allowedStatus = ['pending', 'active', 'blocked'];
         $moduleIdsRaw = $_POST['module_ids'] ?? [];
 
-        if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
+        if ($firstName === '' || mb_strlen($firstName) < 2 || mb_strlen($firstName) > 80) {
             $this->setFlash('error', 'Nombre invalido para nuevo usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if ($lastName === '' || mb_strlen($lastName) < 2 || mb_strlen($lastName) > 120) {
+            $this->setFlash('error', 'Apellidos invalidos para nuevo usuario.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if (!preg_match('/^[0-9+\s().-]{6,30}$/', $phone)) {
+            $this->setFlash('error', 'Movil invalido. Usa solo numeros y simbolos telefonicos.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if ($address === '' || mb_strlen($address) < 5 || mb_strlen($address) > 220) {
+            $this->setFlash('error', 'Direccion invalida para nuevo usuario.');
+            header('Location: /dashboard/users/altas-bajas');
+            return;
+        }
+        if ($fullName === '' || mb_strlen($fullName) > 120) {
+            $this->setFlash('error', 'Nombre completo invalido para nuevo usuario.');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $this->setFlash('error', 'Email invalido para nuevo usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if (!in_array($status, $allowedStatus, true)) {
             $this->setFlash('error', 'Estado invalido para nuevo usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $googleId = $googleIdInput;
         if ($googleId !== '' && !preg_match('/^[A-Za-z0-9._-]{4,128}$/', $googleId)) {
             $this->setFlash('error', 'Google ID invalido. Usa solo letras, numeros, punto, guion o guion bajo.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if ($usernameInput !== '' && !preg_match('/^[A-Za-z0-9._-]{4,60}$/', $usernameInput)) {
             $this->setFlash('error', 'Username invalido. Usa 4-60 caracteres: letras, numeros, punto, guion o guion bajo.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if ($usernameInput === '' && $passwordInput !== '') {
             $this->setFlash('error', 'Si defines password, debes indicar tambien username.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if ($usernameInput !== '' && (strlen($passwordInput) < 8 || strlen($passwordInput) > 72)) {
             $this->setFlash('error', 'La password local debe tener entre 8 y 72 caracteres.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if ($googleId === '') {
@@ -722,13 +1115,17 @@ final class App
         $this->pdo->beginTransaction();
         try {
             $insertUser = $this->pdo->prepare(
-                'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
-                 VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
+                'INSERT INTO users (google_id, email, full_name, first_name, last_name, phone, address, username, password_hash, auth_provider, status, created_at)
+                 VALUES (:google_id, :email, :full_name, :first_name, :last_name, :phone, :address, :username, :password_hash, :auth_provider, :status, :created_at)'
             );
             $insertUser->execute([
                 ':google_id' => $googleId,
                 ':email' => $email,
                 ':full_name' => $fullName,
+                ':first_name' => $firstName,
+                ':last_name' => $lastName,
+                ':phone' => $phone,
+                ':address' => $address,
                 ':username' => $username,
                 ':password_hash' => $passwordHash,
                 ':auth_provider' => $authProvider,
@@ -763,26 +1160,26 @@ final class App
                 $message = 'No se pudo crear: email, Google ID o username ya existen.';
             }
             $this->setFlash('error', $message);
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $this->setFlash('success', 'Usuario creado correctamente.');
-        header('Location: /dashboard/users');
+        header('Location: /dashboard/users/altas-bajas');
     }
 
     private function dashboardUsersBlock(): void
     {
         if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
             $this->setFlash('error', 'Token CSRF invalido.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $userId = (int) ($_POST['user_id'] ?? 0);
         if ($userId <= 0) {
             $this->setFlash('error', 'Usuario invalido para bloqueo.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
@@ -799,26 +1196,26 @@ final class App
         } catch (\Throwable $exception) {
             $this->pdo->rollBack();
             $this->setFlash('error', 'No se pudo bloquear el usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $this->setFlash('success', 'Usuario bloqueado correctamente.');
-        header('Location: /dashboard/users');
+        header('Location: /dashboard/users/altas-bajas');
     }
 
     private function dashboardUsersDeactivate(): void
     {
         if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
             $this->setFlash('error', 'Token CSRF invalido.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $userId = (int) ($_POST['user_id'] ?? 0);
         if ($userId <= 0) {
             $this->setFlash('error', 'Usuario invalido para dar de baja.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
@@ -838,19 +1235,19 @@ final class App
         } catch (\Throwable $exception) {
             $this->pdo->rollBack();
             $this->setFlash('error', 'No se pudo dar de baja al usuario.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $this->setFlash('success', 'Usuario dado de baja (sin acceso y sin modulos).');
-        header('Location: /dashboard/users');
+        header('Location: /dashboard/users/altas-bajas');
     }
 
     private function dashboardUsersResetPassword(): void
     {
         if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
             $this->setFlash('error', 'Token CSRF invalido.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
@@ -859,12 +1256,12 @@ final class App
 
         if ($userId <= 0) {
             $this->setFlash('error', 'Usuario invalido para reset de password.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
         if (strlen($newPassword) < 8 || strlen($newPassword) > 72) {
             $this->setFlash('error', 'La nueva password debe tener entre 8 y 72 caracteres.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
@@ -878,14 +1275,14 @@ final class App
         $user = $query->fetch();
         if ($user === false) {
             $this->setFlash('error', 'Usuario no encontrado para reset.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $username = trim((string) ($user['username'] ?? ''));
         if ($username === '') {
             $this->setFlash('error', 'Este usuario no tiene username local. Asignalo y luego resetea password.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
@@ -908,21 +1305,21 @@ final class App
 
         $this->revokeUserApiTokens($userId);
         $this->setFlash('success', 'Password local reseteada correctamente. Se cerraron sesiones activas.');
-        header('Location: /dashboard/users');
+        header('Location: /dashboard/users/altas-bajas');
     }
 
     private function dashboardUsersDelete(): void
     {
         if (!Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''))) {
             $this->setFlash('error', 'Token CSRF invalido.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $userId = (int) ($_POST['user_id'] ?? 0);
         if ($userId <= 0) {
             $this->setFlash('error', 'Usuario invalido para eliminar.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
@@ -931,12 +1328,12 @@ final class App
 
         if ($delete->rowCount() === 0) {
             $this->setFlash('error', 'Usuario no encontrado para eliminar.');
-            header('Location: /dashboard/users');
+            header('Location: /dashboard/users/altas-bajas');
             return;
         }
 
         $this->setFlash('success', 'Usuario eliminado definitivamente.');
-        header('Location: /dashboard/users');
+        header('Location: /dashboard/users/altas-bajas');
     }
 
     private function dashboardActivities(): void
@@ -1565,6 +1962,7 @@ final class App
             $this->json(['ok' => false, 'message' => 'Nombre invalido'], 422);
             return;
         }
+        $splitName = $this->splitFullName($fullName);
 
         $this->pdo->beginTransaction();
         try {
@@ -1579,13 +1977,17 @@ final class App
 
             if ($userRow === false) {
                 $insert = $this->pdo->prepare(
-                    'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
-                     VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
+                    'INSERT INTO users (google_id, email, full_name, first_name, last_name, phone, address, username, password_hash, auth_provider, status, created_at)
+                     VALUES (:google_id, :email, :full_name, :first_name, :last_name, :phone, :address, :username, :password_hash, :auth_provider, :status, :created_at)'
                 );
                 $insert->execute([
                     ':google_id' => $googleId,
                     ':email' => $email,
                     ':full_name' => $fullName,
+                    ':first_name' => $splitName['first_name'],
+                    ':last_name' => $splitName['last_name'],
+                    ':phone' => '',
+                    ':address' => '',
                     ':username' => null,
                     ':password_hash' => null,
                     ':auth_provider' => 'google',
@@ -1615,6 +2017,8 @@ final class App
                      SET google_id = :google_id,
                          email = :email,
                          full_name = :full_name,
+                         first_name = :first_name,
+                         last_name = :last_name,
                          auth_provider = :auth_provider
                      WHERE id = :id'
                 );
@@ -1622,6 +2026,8 @@ final class App
                     ':google_id' => $googleId,
                     ':email' => $email,
                     ':full_name' => $fullName,
+                    ':first_name' => $splitName['first_name'],
+                    ':last_name' => $splitName['last_name'],
                     ':auth_provider' => $authProvider,
                     ':id' => $userId,
                 ]);
@@ -2102,6 +2508,7 @@ final class App
                 $fullName = $email;
             }
             $fullName = mb_substr($fullName, 0, 120);
+            $splitName = $this->splitFullName($fullName);
 
             $appSecret = (string) ($this->config['app_secret_key'] ?? '');
             $this->pdo->beginTransaction();
@@ -2117,13 +2524,17 @@ final class App
 
                 if ($userRow === false) {
                     $insert = $this->pdo->prepare(
-                        'INSERT INTO users (google_id, email, full_name, username, password_hash, auth_provider, status, created_at)
-                         VALUES (:google_id, :email, :full_name, :username, :password_hash, :auth_provider, :status, :created_at)'
+                        'INSERT INTO users (google_id, email, full_name, first_name, last_name, phone, address, username, password_hash, auth_provider, status, created_at)
+                         VALUES (:google_id, :email, :full_name, :first_name, :last_name, :phone, :address, :username, :password_hash, :auth_provider, :status, :created_at)'
                     );
                     $insert->execute([
                         ':google_id' => $googleId,
                         ':email' => $email,
                         ':full_name' => $fullName,
+                        ':first_name' => $splitName['first_name'],
+                        ':last_name' => $splitName['last_name'],
+                        ':phone' => '',
+                        ':address' => '',
                         ':username' => null,
                         ':password_hash' => null,
                         ':auth_provider' => 'google',
@@ -2153,6 +2564,8 @@ final class App
                          SET google_id = :google_id,
                              email = :email,
                              full_name = :full_name,
+                             first_name = :first_name,
+                             last_name = :last_name,
                              auth_provider = :auth_provider
                          WHERE id = :id'
                     );
@@ -2160,6 +2573,8 @@ final class App
                         ':google_id' => $googleId,
                         ':email' => $email,
                         ':full_name' => $fullName,
+                        ':first_name' => $splitName['first_name'],
+                        ':last_name' => $splitName['last_name'],
                         ':auth_provider' => $authProvider,
                         ':id' => $userId,
                     ]);
@@ -2949,6 +3364,29 @@ final class App
         return $this->isValidPaymentMethod($normalized) ? $normalized : null;
     }
 
+    /**
+     * @return array{first_name:string,last_name:string}
+     */
+    private function splitFullName(string $fullName): array
+    {
+        $normalized = trim((string) preg_replace('/\s+/', ' ', $fullName));
+        if ($normalized === '') {
+            return [
+                'first_name' => '',
+                'last_name' => '',
+            ];
+        }
+
+        $parts = explode(' ', $normalized, 2);
+        $firstName = mb_substr((string) ($parts[0] ?? ''), 0, 80);
+        $lastName = mb_substr((string) ($parts[1] ?? ''), 0, 120);
+
+        return [
+            'first_name' => $firstName,
+            'last_name' => $lastName,
+        ];
+    }
+
     private function toLocalDate(string $isoDate): ?\DateTimeImmutable
     {
         $date = date_create_immutable($isoDate);
@@ -3252,7 +3690,7 @@ final class App
         $tokenHash = hash('sha256', $rawToken);
 
         $query = $this->pdo->prepare(
-            'SELECT u.id, u.google_id, u.email, u.full_name, u.username, u.auth_provider, u.status
+            'SELECT u.id, u.google_id, u.email, u.full_name, u.first_name, u.last_name, u.phone, u.address, u.username, u.auth_provider, u.status
              FROM api_tokens t
              INNER JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = :token_hash
@@ -3335,7 +3773,7 @@ final class App
     private function getUserById(int $userId): ?array
     {
         $query = $this->pdo->prepare(
-            'SELECT id, google_id, email, full_name, username, auth_provider, status
+            'SELECT id, google_id, email, full_name, first_name, last_name, phone, address, username, auth_provider, status
              FROM users
              WHERE id = :id
              LIMIT 1'
@@ -3373,6 +3811,10 @@ final class App
             'google_id' => (string) $user['google_id'],
             'email' => (string) $user['email'],
             'full_name' => (string) $user['full_name'],
+            'first_name' => (string) ($user['first_name'] ?? ''),
+            'last_name' => (string) ($user['last_name'] ?? ''),
+            'phone' => (string) ($user['phone'] ?? ''),
+            'address' => (string) ($user['address'] ?? ''),
             'username' => (string) ($user['username'] ?? ''),
             'auth_provider' => (string) ($user['auth_provider'] ?? 'google'),
             'status' => (string) $user['status'],
@@ -3576,6 +4018,154 @@ final class App
         return 'auth_fail|' . $normalizedScope . '|' . $principalHash . '|' . $ipHash;
     }
 
+    private function applyAuthFailureDelay(): void
+    {
+        try {
+            $delay = random_int(self::AUTH_FAILURE_DELAY_MIN_US, self::AUTH_FAILURE_DELAY_MAX_US);
+            usleep($delay);
+        } catch (\Throwable) {
+            usleep(self::AUTH_FAILURE_DELAY_MIN_US);
+        }
+    }
+
+    private function isSameOriginFormRequest(): bool
+    {
+        $expected = $this->requestOriginParts();
+        if ($expected === null) {
+            return false;
+        }
+
+        $originHeader = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        $refererHeader = trim((string) ($_SERVER['HTTP_REFERER'] ?? ''));
+
+        if ($originHeader === '' && $refererHeader === '') {
+            // Compatibility fallback for clients/proxies that omit both headers.
+            return true;
+        }
+
+        if ($originHeader !== '') {
+            $originParts = $this->originPartsFromUrl($originHeader);
+            if ($originParts === null || !$this->originPartsMatch($expected, $originParts)) {
+                return false;
+            }
+        }
+
+        if ($refererHeader !== '') {
+            $refererParts = $this->originPartsFromUrl($refererHeader);
+            if ($refererParts === null || !$this->originPartsMatch($expected, $refererParts)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @return array{scheme: string, host: string, port: int}|null
+     */
+    private function requestOriginParts(): ?array
+    {
+        $scheme = Security::isHttpsRequest() ? 'https' : 'http';
+        $httpHost = trim((string) ($_SERVER['HTTP_HOST'] ?? ''));
+        if ($httpHost !== '') {
+            return $this->originPartsFromHost($scheme, $httpHost);
+        }
+
+        $serverName = trim((string) ($_SERVER['SERVER_NAME'] ?? ''));
+        $serverPort = trim((string) ($_SERVER['SERVER_PORT'] ?? ''));
+        if ($serverName === '') {
+            return null;
+        }
+        $port = ctype_digit($serverPort) ? (int) $serverPort : ($scheme === 'https' ? 443 : 80);
+        return [
+            'scheme' => $scheme,
+            'host' => strtolower($serverName),
+            'port' => $port,
+        ];
+    }
+
+    /**
+     * @return array{scheme: string, host: string, port: int}|null
+     */
+    private function originPartsFromUrl(string $url): ?array
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return null;
+        }
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if (($scheme !== 'http' && $scheme !== 'https') || $host === '') {
+            return null;
+        }
+        $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
+        return [
+            'scheme' => $scheme,
+            'host' => $host,
+            'port' => $port,
+        ];
+    }
+
+    /**
+     * @return array{scheme: string, host: string, port: int}|null
+     */
+    private function originPartsFromHost(string $scheme, string $httpHost): ?array
+    {
+        $host = strtolower($httpHost);
+        if ($host === '') {
+            return null;
+        }
+
+        $port = $scheme === 'https' ? 443 : 80;
+        if (str_contains($host, ':')) {
+            $segments = explode(':', $host);
+            $possiblePort = (string) end($segments);
+            if (ctype_digit($possiblePort)) {
+                $port = (int) $possiblePort;
+                array_pop($segments);
+                $host = implode(':', $segments);
+            }
+        }
+
+        $host = trim($host, '[]');
+        if ($host === '') {
+            return null;
+        }
+
+        return [
+            'scheme' => $scheme,
+            'host' => $host,
+            'port' => $port,
+        ];
+    }
+
+    /**
+     * @param array{scheme: string, host: string, port: int} $expected
+     * @param array{scheme: string, host: string, port: int} $actual
+     */
+    private function originPartsMatch(array $expected, array $actual): bool
+    {
+        if ($expected['scheme'] !== $actual['scheme'] || $expected['port'] !== $actual['port']) {
+            return false;
+        }
+
+        if ($expected['host'] === $actual['host']) {
+            return true;
+        }
+
+        if ($this->isLoopbackHost($expected['host']) && $this->isLoopbackHost($actual['host'])) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function isLoopbackHost(string $host): bool
+    {
+        $host = strtolower(trim($host));
+        return $host === 'localhost' || $host === '127.0.0.1' || $host === '::1';
+    }
+
     private function clientIp(): string
     {
         $forwardedFor = (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
@@ -3685,3 +4275,4 @@ final class App
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 }
+

@@ -68,6 +68,17 @@ if (is_file($localEnvFile) && is_readable($localEnvFile)) {
 $config = require __DIR__ . '/../config.php';
 date_default_timezone_set((string) ($config['timezone'] ?? 'UTC'));
 
+$appSecret = (string) ($config['app_secret_key'] ?? '');
+$defaultSecret = 'change-this-local-secret-before-production';
+$remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+$isLoopbackRequest = $remoteAddr === '127.0.0.1' || $remoteAddr === '::1' || $remoteAddr === '';
+if ($appSecret === $defaultSecret && !$isLoopbackRequest) {
+    http_response_code(500);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Configuracion insegura: define AGELAI_APP_SECRET antes de exponer la aplicacion.';
+    exit;
+}
+
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Integrations.php';
 require_once __DIR__ . '/App.php';

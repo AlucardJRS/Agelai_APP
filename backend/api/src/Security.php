@@ -15,7 +15,10 @@ final class Security
 
         header('X-Content-Type-Options: nosniff');
         header('X-Frame-Options: SAMEORIGIN');
+        header('X-DNS-Prefetch-Control: off');
+        header('X-Download-Options: noopen');
         header('X-Permitted-Cross-Domain-Policies: none');
+        header('Origin-Agent-Cluster: ?1');
         header('Cross-Origin-Opener-Policy: same-origin');
         header('Cross-Origin-Resource-Policy: same-origin');
         header('Referrer-Policy: strict-origin-when-cross-origin');
