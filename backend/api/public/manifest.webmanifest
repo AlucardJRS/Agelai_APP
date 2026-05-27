@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "Club Agelai",
+  "short_name": "Agelai",
+  "description": "Reservas, actividades y servicios de Club Agelai.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#050d24",
+  "theme_color": "#0b1430",
+  "lang": "es-ES",
+  "icons": [
+    {
+      "src": "/assets/brand/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/brand/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

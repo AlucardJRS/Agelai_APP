@@ -7,8 +7,14 @@ declare(strict_types=1);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= Security::e($title); ?> - Club Agelai</title>
+    <meta name="theme-color" content="#0b1430">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Club Agelai">
     <link rel="icon" type="image/png" href="/assets/brand/agelai-logo.png">
     <link rel="apple-touch-icon" href="/assets/brand/agelai-logo.png">
+    <link rel="manifest" href="/manifest.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <?php $isLoginPage = $currentPath === '/dashboard/login'; ?>
@@ -23,8 +29,13 @@ declare(strict_types=1);
         <?php include $viewFile; ?>
     </main>
 <?php else: ?>
+    <input type="checkbox" id="app-nav-toggle" class="app-nav-toggle-control" aria-hidden="true">
     <div class="app-shell">
         <aside class="app-sidebar">
+            <div class="app-sidebar-mobile-head">
+                <strong>Menu</strong>
+                <label for="app-nav-toggle" class="app-sidebar-mobile-close" aria-label="Cerrar menu">×</label>
+            </div>
             <div class="app-sidebar-brand">
                 <div class="app-sidebar-logo-wrap">
                     <img src="/assets/brand/agelai-logo.png" alt="Logo Club Agelai" class="app-sidebar-logo">
@@ -54,6 +65,7 @@ declare(strict_types=1);
                 </form>
             </div>
         </aside>
+        <label for="app-nav-toggle" class="app-sidebar-overlay" aria-hidden="true"></label>
 
         <div class="app-main">
             <header class="app-topbar" aria-label="Barra superior">
@@ -67,6 +79,10 @@ declare(strict_types=1);
                 </nav>
 
                 <div class="app-topbar-actions">
+                    <label for="app-nav-toggle" class="app-menu-toggle" aria-label="Abrir menu">
+                        <span aria-hidden="true">☰</span>
+                        <span>Menu</span>
+                    </label>
                     <form method="get" action="/dashboard/users" class="app-search-form" role="search">
                         <label for="app-dashboard-search" class="sr-only">Buscar</label>
                         <input id="app-dashboard-search" type="search" name="nombre" maxlength="80" placeholder="Buscar usuarios...">
@@ -94,5 +110,6 @@ declare(strict_types=1);
         </div>
     </div>
 <?php endif; ?>
+<script src="/assets/pwa-register.js" defer></script>
 </body>
 </html>

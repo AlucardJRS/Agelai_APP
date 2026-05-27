@@ -1,0 +1,12 @@
+RewriteEngine On
+
+# Block direct access to hidden files except .well-known (Let's Encrypt).
+RewriteRule "(^|/)\.(?!well-known/)" - [F]
+
+# If the request targets an existing file or directory, serve it directly.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Otherwise, route all requests through front controller.
+RewriteRule ^ index.php [L,QSA]

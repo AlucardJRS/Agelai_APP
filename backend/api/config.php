@@ -8,7 +8,9 @@ declare(strict_types=1);
 return [
     'app_name' => 'Club Agelai',
     'timezone' => 'Europe/Madrid',
-    'base_url' => 'http://127.0.0.1:8000',
+    'base_url' => getenv('AGELAI_BASE_URL') !== false
+        ? (string) getenv('AGELAI_BASE_URL')
+        : 'http://127.0.0.1:8000',
     'app_secret_key' => getenv('AGELAI_APP_SECRET') !== false
         ? (string) getenv('AGELAI_APP_SECRET')
         : 'change-this-local-secret-before-production',
@@ -58,7 +60,13 @@ return [
         'client_secret' => getenv('AGELAI_GOOGLE_CLIENT_SECRET') !== false ? (string) getenv('AGELAI_GOOGLE_CLIENT_SECRET') : '',
         'redirect_uri' => getenv('AGELAI_GOOGLE_REDIRECT_URI') !== false
             ? (string) getenv('AGELAI_GOOGLE_REDIRECT_URI')
-            : 'http://127.0.0.1:8000/oauth/google/callback',
+            : (
+                (
+                    getenv('AGELAI_BASE_URL') !== false
+                        ? rtrim((string) getenv('AGELAI_BASE_URL'), '/')
+                        : 'http://127.0.0.1:8000'
+                ) . '/oauth/google/callback'
+            ),
         'scopes' => [
             'openid',
             'email',

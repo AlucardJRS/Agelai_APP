@@ -94,6 +94,10 @@ $dbUser = Read-Default -Prompt "AGELAI_DB_USER" -Default "root"
 $dbPassSecure = Read-Host "AGELAI_DB_PASS (puede ir vacio)" -AsSecureString
 $dbPass = Convert-SecureToPlainText -SecureValue $dbPassSecure
 
+# Base URL de la aplicacion (local o produccion)
+$appBaseUrl = Read-Default -Prompt "AGELAI_BASE_URL" -Default "http://127.0.0.1:8000"
+$appBaseUrl = $appBaseUrl.TrimEnd('/')
+
 # App secret
 $appSecretInput = Read-Host "AGELAI_APP_SECRET (enter para generar automaticamente)"
 if ([string]::IsNullOrWhiteSpace($appSecretInput)) {
@@ -108,7 +112,8 @@ Write-Host ""
 Write-Host "Configura Google OAuth (obligatorio para login Google real)" -ForegroundColor Green
 $googleClientId = Read-Required -Prompt "AGELAI_GOOGLE_CLIENT_ID"
 $googleClientSecret = Read-SecureRequired -Prompt "AGELAI_GOOGLE_CLIENT_SECRET"
-$googleRedirectUri = Read-Default -Prompt "AGELAI_GOOGLE_REDIRECT_URI" -Default "http://127.0.0.1:8000/oauth/google/callback"
+$googleRedirectDefault = "$appBaseUrl/oauth/google/callback"
+$googleRedirectUri = Read-Default -Prompt "AGELAI_GOOGLE_REDIRECT_URI" -Default $googleRedirectDefault
 
 Write-Host ""
 $configureSmtp = Read-Default -Prompt "¿Configurar SMTP real ahora? (si/no)" -Default "si"
@@ -142,6 +147,8 @@ $lines = @(
     "AGELAI_DB_NAME=$(Escape-EnvValue -Value $dbName)",
     "AGELAI_DB_USER=$(Escape-EnvValue -Value $dbUser)",
     "AGELAI_DB_PASS=$(Escape-EnvValue -Value $dbPass)",
+    "",
+    "AGELAI_BASE_URL=$(Escape-EnvValue -Value $appBaseUrl)",
     "",
     "AGELAI_APP_SECRET=$(Escape-EnvValue -Value $appSecret)",
     "",

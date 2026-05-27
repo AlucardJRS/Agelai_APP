@@ -7,6 +7,25 @@
 - Extensiones PHP: `pdo_mysql`, `openssl`, `curl`
 - Flutter SDK
 - Android Studio / emulador Android
+- Node.js LTS (se instala automatico con `winget` en el script de setup)
+
+## 1.1) Preparar Entorno Android Web App (recomendado)
+
+Desde la raiz del proyecto:
+
+```powershell
+cd tools
+.\setup_android_webapp_env.ps1
+```
+
+Este script:
+
+- instala `cmdline-tools` si faltan
+- acepta licencias Android automaticamente
+- configura `ANDROID_SDK_ROOT`, `ANDROID_HOME`, `JAVA_HOME`
+- deja `node`, `npm`, `adb`, `sdkmanager` y `apksigner` listos en PATH
+
+Tras ejecutarlo, cierra y abre una consola nueva para asegurar recarga completa de variables.
 
 ## 2) Preparar MariaDB Local
 
@@ -30,6 +49,7 @@ cd tools
 Este asistente te pedira por pantalla:
 
 - MariaDB local
+- `AGELAI_BASE_URL` (url base local o produccion)
 - Google OAuth (`client_id`, `client_secret`, redirect URI)
 - SMTP (si quieres correo real en pruebas)
 - `AGELAI_APP_SECRET` (si no lo introduces, se genera automaticamente)
@@ -136,3 +156,21 @@ Si pruebas en movil fisico, cambia `ApiClient._baseUrl` en:
 - Rotacion de secretos y cuentas de servicio segun hosting final.
 - Ajuste fino de indices y backups sobre MariaDB del hosting final.
 - Monitorizacion y alertas operativas de correo/API externas.
+
+## 10) Generar Android Web App (TWA)
+
+Cuando tengas el dominio final con `HTTPS` activo y `manifest.webmanifest` publico:
+
+```powershell
+.\tools\build_twa_android.ps1 -ManifestUrl "https://tu-dominio.com/manifest.webmanifest"
+```
+
+Se crea (o actualiza) el proyecto Android en:
+
+- `mobile_webapp/twa_android`
+
+## 11) Despliegue en Plesk
+
+Guia completa:
+
+- [deploy_plesk.md](C:\Users\mtrfu\Documents\Agelai_Dietas\docs\deploy_plesk.md)

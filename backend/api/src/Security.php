@@ -93,11 +93,12 @@ final class Security
      */
     public static function passwordHashOptions(): array
     {
-        // Argon2id settings target balanced security for local/prod environments.
+        // Keep threads=1 for maximum shared-host compatibility (Plesk/php-fpm builds
+        // often reject values >1 with "thread value other than 1 is not supported").
         return [
             'memory_cost' => 64 * 1024,
             'time_cost' => 4,
-            'threads' => 2,
+            'threads' => 1,
         ];
     }
 

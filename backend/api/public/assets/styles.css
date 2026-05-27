@@ -894,6 +894,15 @@ body.app-page {
     display: flex;
 }
 
+/* Checkbox controller enables CSS-only mobile sidebar toggle. */
+.app-nav-toggle-control {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
 /* Sidebar column keeps navigation and actions fixed on the left. */
 .app-sidebar {
     width: 280px;
@@ -906,6 +915,16 @@ body.app-page {
     position: sticky;
     top: 0;
     height: 100vh;
+}
+
+/* Mobile-only head keeps close affordance visible in off-canvas mode. */
+.app-sidebar-mobile-head {
+    display: none;
+}
+
+/* Overlay is disabled on desktop and enabled on smaller screens. */
+.app-sidebar-overlay {
+    display: none;
 }
 
 /* Sidebar brand aligns logo and identity in a compact top module. */
@@ -1093,6 +1112,11 @@ body.app-page {
     gap: 0.7rem;
 }
 
+/* Mobile menu trigger hidden in desktop layouts. */
+.app-menu-toggle {
+    display: none;
+}
+
 /* Compact search form offers quick user lookup from any screen. */
 .app-search-form input {
     width: 210px;
@@ -1132,6 +1156,33 @@ body.app-page {
     border: 1px solid rgba(212, 228, 250, 0.13);
     box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
     color: #d4e4fa;
+}
+
+/* KPI mini-cards inside users movements must match dark dashboard theme. */
+.app-page .stat-card {
+    background: linear-gradient(150deg, rgba(18, 33, 49, 0.9), rgba(17, 29, 44, 0.8));
+    border: 1px solid rgba(212, 228, 250, 0.13);
+    box-shadow: 0 14px 24px rgba(3, 11, 20, 0.35);
+}
+
+/* Stat titles in dark cards use high-contrast but softer than values. */
+.app-page .stat-card h3 {
+    margin-bottom: 0.5rem;
+    color: rgba(212, 228, 250, 0.9);
+}
+
+/* Stat value container keeps readable spacing and contrast. */
+.app-page .stat-card p {
+    margin: 0;
+    color: rgba(212, 228, 250, 0.92);
+}
+
+/* Big number stands out clearly in dark metric cards. */
+.app-page .stat-card p strong {
+    display: inline-block;
+    font-size: 2rem;
+    line-height: 1.1;
+    color: #ecf3ff;
 }
 
 /* App page headings use brighter tone for hierarchy on dark surfaces. */
@@ -1416,7 +1467,58 @@ body.app-page {
 /* Tablet and below: sidebar hides, topbar/nav become compact and scrollable. */
 @media (max-width: 1200px) {
     .app-sidebar {
-        display: none;
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: min(300px, 86vw);
+        transform: translateX(-106%);
+        transition: transform 180ms ease;
+        z-index: 80;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.42);
+    }
+
+    .app-sidebar-mobile-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #e6efff;
+        padding: 0.2rem 0.35rem 0.75rem;
+        border-bottom: 1px solid rgba(212, 228, 250, 0.12);
+        margin-bottom: 0.45rem;
+    }
+
+    .app-sidebar-mobile-close {
+        cursor: pointer;
+        display: inline-flex;
+        width: 34px;
+        height: 34px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        border: 1px solid rgba(212, 228, 250, 0.22);
+        color: #e6efff;
+        font-size: 1.5rem;
+        line-height: 1;
+    }
+
+    .app-sidebar-overlay {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 75;
+        background: rgba(3, 10, 19, 0.56);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 160ms ease;
+    }
+
+    .app-nav-toggle-control:checked ~ .app-shell .app-sidebar {
+        transform: translateX(0);
+    }
+
+    .app-nav-toggle-control:checked ~ .app-shell .app-sidebar-overlay {
+        opacity: 1;
+        pointer-events: auto;
     }
 
     .app-topbar {
@@ -1425,16 +1527,25 @@ body.app-page {
     }
 
     .app-topbar-nav {
-        order: 3;
-        width: 100%;
-        overflow-x: auto;
-        white-space: nowrap;
-        flex-wrap: nowrap;
-        padding-bottom: 0.2rem;
+        display: none;
     }
 
     .app-topbar-actions {
-        margin-left: auto;
+        margin-left: 0;
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .app-menu-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border-radius: 10px;
+        border: 1px solid rgba(212, 228, 250, 0.24);
+        padding: 0.42rem 0.6rem;
+        color: #e6efff;
+        cursor: pointer;
+        font-size: 0.92rem;
     }
 
     .app-content.container {

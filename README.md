@@ -23,7 +23,9 @@ Este repositorio arranca desde cero para construir:
 
 - `backend/api`: API REST + dashboard web + seguridad base
 - `mobile_flutter/app`: app Flutter para Android conectada al backend
+- `mobile_webapp/twa_android`: contenedor Android para la Web App (generado con Bubblewrap)
 - `docs/setup_local.md`: guia paso a paso para ejecutar en local
+- `docs/deploy_plesk.md`: guia de despliegue a hosting Plesk (agelaigym.es)
 
 ## Reglas de Negocio de Esta Iteracion
 
@@ -50,3 +52,13 @@ Desde el dashboard puedes editar nombre, permisos/modulos, resetear password loc
 ## Siguiente Paso
 
 Revisa [docs/setup_local.md](C:\Users\mtrfu\Documents\Agelai_Dietas\docs\setup_local.md) para arrancar el entorno.
+
+## Scripts de Automatizacion (Local)
+
+- `tools/setup_android_webapp_env.ps1`: prepara entorno Android Web App (SDK tools, licencias, PATH, variables).
+- `tools/build_twa_android.ps1`: genera/actualiza proyecto Android (TWA) desde el `manifest.webmanifest` publicado por HTTPS.
+
+## Produccion (Plesk)
+
+- Ejemplo de secretos: `backend/api/.env.production.example`
+- Despliegue paso a paso: [deploy_plesk.md](C:\Users\mtrfu\Documents\Agelai_Dietas\docs\deploy_plesk.md)
